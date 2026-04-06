@@ -11,6 +11,25 @@ from .api import Api
 
 logger = logging.getLogger(__name__)
 
+# pywebview + pythonnet(WebView2) の Windows Accessibility 再帰バグ回避
+sys.setrecursionlimit(500)
+
+
+class _PywebviewErrorFilter(logging.Filter):
+    """pywebviewのAccessibilityObject再帰エラーを抑制するフィルタ。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if "AccessibilityObject" in msg:
+            return False
+        if "CoreWebView2 members can only be accessed" in msg:
+            return False
+        if "CoreWebView2 can only be accessed" in msg:
+            return False
+        if "__abstractmethods__" in msg:
+            return False
+        return True
+
 
 def get_web_dir() -> str:
     """webアセットディレクトリのパスを取得する。
@@ -33,6 +52,12 @@ def main():
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    # pywebviewの既知エラーログを抑制
+    for name in ("pywebview", ""):
+        log = logging.getLogger(name)
+        log.addFilter(_PywebviewErrorFilter())
+
     logger.info("aviutl-whisper を起動しています...")
 
     api = Api()
@@ -50,7 +75,10 @@ def main():
     )
     api.set_window(window)
 
-    webview.start(debug="--debug" in sys.argv)
+    webview.start(
+        debug="--debug" in sys.argv,
+        http_server=True,
+    )
 
 
 if __name__ == "__main__":
