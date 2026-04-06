@@ -35,7 +35,7 @@ class Api:
             "すべてのファイル (*.*)",
         )
         result = self.window.create_file_dialog(
-            webview.OPEN_DIALOG,
+            webview.FileDialog.OPEN,
             file_types=file_types,
         )
         if result and len(result) > 0:
@@ -146,7 +146,7 @@ class Api:
         file_types = (f"*{ext}",)
 
         result = self.window.create_file_dialog(
-            webview.SAVE_DIALOG,
+            webview.FileDialog.SAVE,
             file_types=file_types,
         )
 

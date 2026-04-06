@@ -6,6 +6,9 @@ import platform
 from pathlib import Path
 from typing import Callable
 
+# Windows シムリンク警告を抑制
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
 logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[float, str], None]
@@ -96,13 +99,16 @@ def load_whisper_model(
 def load_speechbrain_model(progress_callback: ProgressCallback | None = None):
     """speechbrainの話者埋め込みモデルを読み込む。"""
     from speechbrain.inference.speaker import EncoderClassifier
+    from speechbrain.utils.fetching import FetchConfig, LocalStrategy
 
     if progress_callback:
         progress_callback(0.0, "話者分離モデルを準備中...")
 
+    # Windows ではシムリンクに管理者権限が必要なためコピー戦略を使用
     model = EncoderClassifier.from_hparams(
         source="speechbrain/spkrec-ecapa-voxceleb",
         savedir=str(get_speechbrain_model_dir()),
+        fetch_config=FetchConfig(local_strategy=LocalStrategy.COPY),
     )
 
     if progress_callback:
