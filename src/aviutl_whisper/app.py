@@ -12,7 +12,8 @@ from .api import Api
 logger = logging.getLogger(__name__)
 
 # pywebview + pythonnet(WebView2) の Windows Accessibility 再帰バグ回避
-sys.setrecursionlimit(500)
+# 500 では WebView2 の正常な初期化でも RecursionError が発生する
+sys.setrecursionlimit(3000)
 
 
 class _PywebviewErrorFilter(logging.Filter):

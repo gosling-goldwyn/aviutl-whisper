@@ -142,8 +142,8 @@ class Api:
         if not self._last_segments:
             return {"success": False, "error": "保存する結果がありません"}
 
-        _, ext, _ = exporter.EXPORTERS.get(format_type, ("", ".txt", None))
-        file_types = (f"*{ext}",)
+        label, ext, _ = exporter.EXPORTERS.get(format_type, ("テキスト", ".txt", None))
+        file_types = (f"{label}ファイル (*{ext})",)
 
         result = self.window.create_file_dialog(
             webview.FileDialog.SAVE,
