@@ -214,6 +214,30 @@ class TestDiarizer:
         assert len(labels) == 6
         assert len(set(labels)) == 2
 
+    def test_cluster_with_auto_threshold(self):
+        """自動閾値推定で2話者が分離される。"""
+        from aviutl_whisper.diarizer import _cluster_speakers, _estimate_threshold
+        from sklearn.preprocessing import normalize
+        # 明確に分離できる2クラスタを生成
+        np.random.seed(42)
+        cluster1 = np.random.randn(5, 192) + 3.0
+        cluster2 = np.random.randn(5, 192) - 3.0
+        embeddings = normalize(np.vstack([cluster1, cluster2]), norm="l2")
+        threshold = _estimate_threshold(embeddings)
+        labels = _cluster_speakers(embeddings, distance_threshold=threshold)
+        assert len(set(labels)) == 2, f"Expected 2 speakers, got {len(set(labels))} (threshold={threshold:.4f})"
+
+    def test_estimate_threshold(self):
+        """閾値推定が妥当な範囲の値を返す。"""
+        from aviutl_whisper.diarizer import _estimate_threshold
+        from sklearn.preprocessing import normalize
+        np.random.seed(42)
+        cluster1 = np.random.randn(3, 192) + 3.0
+        cluster2 = np.random.randn(3, 192) - 3.0
+        embeddings = normalize(np.vstack([cluster1, cluster2]), norm="l2")
+        threshold = _estimate_threshold(embeddings)
+        assert 0.2 <= threshold <= 0.8, f"Threshold {threshold} out of range"
+
     def test_fill_missing_speakers(self):
         """未割当セグメントに話者が伝播される。"""
         from aviutl_whisper.diarizer import _fill_missing_speakers
@@ -281,6 +305,45 @@ class TestExporter:
         assert "csv" in EXPORTERS
         assert "tsv" in EXPORTERS
         assert "text" in EXPORTERS
+        assert "exo" in EXPORTERS
+
+    def test_exo_export(self, sample_segments):
+        """AviUtl exo形式が正しく出力される。"""
+        from aviutl_whisper.exporter import export_exo
+        text = export_exo(sample_segments)
+        assert "[exedit]" in text
+        assert "width=1920" in text
+        assert "height=1080" in text
+        assert "[0]" in text
+        assert "[0.0]" in text
+        assert "_name=テキスト" in text
+        assert "[1]" in text  # 2つ目のセグメント
+
+    def test_exo_hex_encoding(self):
+        """exoのテキストhexエンコードが正しい。"""
+        from aviutl_whisper.exporter import _encode_exo_text
+        result = _encode_exo_text("AB")
+        # "AB" → UTF-16LE: 0x41 0x00 0x42 0x00
+        assert result.startswith("4100420")
+        assert len(result) == 4096
+
+    def test_exo_speaker_layers(self, sample_segments):
+        """話者ごとに異なるレイヤーが割り当てられる。"""
+        from aviutl_whisper.exporter import export_exo
+        text = export_exo(sample_segments)
+        # Speaker 1 → layer=1, Speaker 2 → layer=2
+        assert "layer=1" in text
+        assert "layer=2" in text
+
+    def test_exo_export_to_file(self, sample_segments, tmp_path):
+        """exoファイルがCP932で保存される。"""
+        from aviutl_whisper.exporter import export_to_file
+        path = str(tmp_path / "output.exo")
+        result = export_to_file(sample_segments, path, "exo")
+        assert os.path.exists(result)
+        # CP932で読み込めることを確認
+        content = open(result, encoding="cp932").read()
+        assert "[exedit]" in content
 
     def test_export_to_file(self, sample_segments, tmp_path):
         """ファイルへのエクスポートが動作する。"""
