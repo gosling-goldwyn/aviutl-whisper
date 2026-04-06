@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>aviutl-whisper</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎙️ aviutl-whisper</h1>
+            <p class="subtitle">音声文字起こし＋話者分離ツール</p>
+        </header>
+
+        <section class="card" id="file-section">
+            <h2>📁 入力ファイル</h2>
+            <div class="file-select">
+                <button id="btn-select-file" class="btn btn-primary">ファイルを選択</button>
+                <span id="file-name" class="file-label">ファイルが選択されていません</span>
+            </div>
+            <div id="file-info" class="file-info hidden"></div>
+        </section>
+
+        <section class="card" id="settings-section">
+            <h2>⚙️ 設定</h2>
+            <div class="settings-grid">
+                <div class="setting-item">
+                    <label for="model-size">Whisperモデル</label>
+                    <select id="model-size">
+                        <option value="tiny">tiny (~75 MB) - 最速・低精度</option>
+                        <option value="base">base (~140 MB) - 高速</option>
+                        <option value="small">small (~460 MB) - バランス</option>
+                        <option value="medium" selected>medium (~1.5 GB) - 推奨</option>
+                        <option value="large-v3">large-v3 (~3 GB) - 最高精度</option>
+                    </select>
+                </div>
+                <div class="setting-item">
+                    <label for="language">言語</label>
+                    <select id="language">
+                        <option value="">自動検出</option>
+                        <option value="ja" selected>日本語</option>
+                        <option value="en">英語</option>
+                        <option value="zh">中国語</option>
+                        <option value="ko">韓国語</option>
+                    </select>
+                </div>
+                <div class="setting-item">
+                    <label for="num-speakers">話者数</label>
+                    <select id="num-speakers">
+                        <option value="auto" selected>自動推定</option>
+                        <option value="1">1人</option>
+                        <option value="2">2人</option>
+                        <option value="3">3人</option>
+                        <option value="4">4人</option>
+                        <option value="5">5人</option>
+                    </select>
+                </div>
+                <div class="setting-item">
+                    <label for="output-format">出力形式</label>
+                    <select id="output-format">
+                        <option value="text" selected>テキスト (.txt)</option>
+                        <option value="srt">SRT字幕 (.srt)</option>
+                        <option value="csv">CSV (.csv)</option>
+                        <option value="tsv">TSV (.tsv)</option>
+                    </select>
+                </div>
+            </div>
+        </section>
+
+        <section class="card" id="action-section">
+            <div class="action-row">
+                <button id="btn-start" class="btn btn-accent" disabled>▶ 文字起こし開始</button>
+                <button id="btn-cancel" class="btn btn-danger hidden">⏹ キャンセル</button>
+            </div>
+            <div id="progress-area" class="hidden">
+                <div class="progress-bar">
+                    <div id="progress-fill" class="progress-fill"></div>
+                </div>
+                <p id="progress-text" class="progress-text">準備中...</p>
+            </div>
+        </section>
+
+        <section class="card hidden" id="result-section">
+            <h2>📝 結果プレビュー</h2>
+            <div class="result-stats" id="result-stats"></div>
+            <div class="result-preview">
+                <textarea id="result-text" readonly></textarea>
+            </div>
+            <div class="action-row">
+                <button id="btn-save" class="btn btn-primary">💾 ファイルに保存</button>
+                <button id="btn-copy" class="btn">📋 コピー</button>
+            </div>
+        </section>
+
+        <footer>
+            <div id="device-info" class="device-info"></div>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
