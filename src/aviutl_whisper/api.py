@@ -169,6 +169,13 @@ class Api:
     def get_device_info(self):
         """実行デバイス情報を返す。"""
         try:
+            import ctranslate2
+            cuda_types = ctranslate2.get_supported_compute_types("cuda")
+            if cuda_types:
+                return {"device": "GPU (CUDA)", "detail": "ctranslate2 CUDA対応"}
+        except Exception:
+            pass
+        try:
             import torch
             if torch.cuda.is_available():
                 name = torch.cuda.get_device_name(0)

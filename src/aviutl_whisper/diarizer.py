@@ -3,8 +3,8 @@
 import logging
 
 import numpy as np
+import soundfile as sf
 import torch
-import torchaudio
 from sklearn.cluster import AgglomerativeClustering
 
 from .transcriber import TranscriptionSegment
@@ -42,15 +42,22 @@ def assign_speakers(
     if progress_callback:
         progress_callback(0.0, "話者分離開始...")
 
-    waveform, sample_rate = torchaudio.load(audio_path)
+    # soundfile で読み込み (torchaudio/torchcodec の FFmpeg 依存を回避)
+    data, sample_rate = sf.read(audio_path, dtype="float32")
 
+    # mono化
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+
+    # 16kHz リサンプル (簡易線形補間)
     if sample_rate != 16000:
-        resampler = torchaudio.transforms.Resample(sample_rate, 16000)
-        waveform = resampler(waveform)
+        import scipy.signal
+        num_samples = int(len(data) * 16000 / sample_rate)
+        data = scipy.signal.resample(data, num_samples)
         sample_rate = 16000
 
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
+    # torch tensor に変換 (1, num_samples)
+    waveform = torch.from_numpy(data).unsqueeze(0)
 
     embeddings = _extract_embeddings(model, waveform, sample_rate, segments, progress_callback)
 

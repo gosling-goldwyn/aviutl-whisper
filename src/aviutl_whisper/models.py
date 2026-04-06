@@ -97,20 +97,36 @@ def load_whisper_model(
 
 
 def _patch_speechbrain_fetch():
-    """Windows でシムリンクエラーを回避するため fetch() のデフォルトを COPY に変更。"""
+    """Windows でシムリンクエラーを回避するため link_with_strategy を直接パッチ。
+
+    fetch() だけでなく parameter_transfer.py の Pretrainer.collect_files() も
+    内部で link_with_strategy を呼ぶため、根本のリンク関数をパッチする。
+    """
     if platform.system() != "Windows":
         return
 
     import speechbrain.utils.fetching as sb_fetching
     from speechbrain.utils.fetching import LocalStrategy
 
-    original_fetch = sb_fetching.fetch
+    if getattr(sb_fetching, "_patched_for_windows", False):
+        return
 
-    def _patched_fetch(*args, **kwargs):
-        kwargs.setdefault("local_strategy", LocalStrategy.COPY)
-        return original_fetch(*args, **kwargs)
+    original_link = sb_fetching.link_with_strategy
 
-    sb_fetching.fetch = _patched_fetch
+    def _patched_link(src, dst, local_strategy):
+        if local_strategy == LocalStrategy.SYMLINK:
+            local_strategy = LocalStrategy.COPY
+        return original_link(src, dst, local_strategy)
+
+    sb_fetching.link_with_strategy = _patched_link
+    sb_fetching._patched_for_windows = True
+
+    # 既存のシムリンクをキャッシュから削除（次回COPYで再作成される）
+    sb_dir = get_speechbrain_model_dir()
+    for f in sb_dir.iterdir():
+        if f.is_symlink():
+            logger.info("シムリンク削除: %s", f.name)
+            f.unlink()
 
 
 def load_speechbrain_model(progress_callback: ProgressCallback | None = None):
