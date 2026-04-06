@@ -96,19 +96,35 @@ def load_whisper_model(
     return model
 
 
+def _patch_speechbrain_fetch():
+    """Windows でシムリンクエラーを回避するため fetch() のデフォルトを COPY に変更。"""
+    if platform.system() != "Windows":
+        return
+
+    import speechbrain.utils.fetching as sb_fetching
+    from speechbrain.utils.fetching import LocalStrategy
+
+    original_fetch = sb_fetching.fetch
+
+    def _patched_fetch(*args, **kwargs):
+        kwargs.setdefault("local_strategy", LocalStrategy.COPY)
+        return original_fetch(*args, **kwargs)
+
+    sb_fetching.fetch = _patched_fetch
+
+
 def load_speechbrain_model(progress_callback: ProgressCallback | None = None):
     """speechbrainの話者埋め込みモデルを読み込む。"""
     from speechbrain.inference.speaker import EncoderClassifier
-    from speechbrain.utils.fetching import FetchConfig, LocalStrategy
+
+    _patch_speechbrain_fetch()
 
     if progress_callback:
         progress_callback(0.0, "話者分離モデルを準備中...")
 
-    # Windows ではシムリンクに管理者権限が必要なためコピー戦略を使用
     model = EncoderClassifier.from_hparams(
         source="speechbrain/spkrec-ecapa-voxceleb",
         savedir=str(get_speechbrain_model_dir()),
-        fetch_config=FetchConfig(local_strategy=LocalStrategy.COPY),
     )
 
     if progress_callback:
@@ -118,13 +134,26 @@ def load_speechbrain_model(progress_callback: ProgressCallback | None = None):
 
 
 def _detect_device() -> tuple[str, str]:
-    """GPU/CPUを自動検出する。"""
+    """GPU/CPUを自動検出する。ctranslate2 → torch の順でCUDAを確認。"""
+    # ctranslate2 (faster-whisper のバックエンド) のCUDAサポートを優先確認
+    try:
+        import ctranslate2
+        cuda_types = ctranslate2.get_supported_compute_types("cuda")
+        if cuda_types:
+            compute = "float16" if "float16" in cuda_types else "int8"
+            logger.info("CUDA GPU検出 (ctranslate2): compute=%s", compute)
+            return "cuda", compute
+    except Exception:
+        pass
+
+    # フォールバック: torch CUDA
     try:
         import torch
         if torch.cuda.is_available():
-            logger.info("CUDA GPU検出: %s", torch.cuda.get_device_name(0))
+            logger.info("CUDA GPU検出 (torch): %s", torch.cuda.get_device_name(0))
             return "cuda", "float16"
     except ImportError:
         pass
+
     logger.info("CPUモードで実行")
     return "cpu", "int8"
