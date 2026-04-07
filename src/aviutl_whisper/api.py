@@ -7,7 +7,7 @@ from pathlib import Path
 
 import webview
 
-from . import audio, diarizer, exporter, models, transcriber
+from . import audio, diarizer, exporter, models, settings, transcriber
 
 logger = logging.getLogger(__name__)
 
@@ -255,9 +255,20 @@ class Api:
             "bold": defaults.bold,
             "italic": defaults.italic,
             "soft_edge": defaults.soft_edge,
+            "pos_x": defaults.pos_x,
+            "pos_y": defaults.pos_y,
             "speaker_colors": list(exporter.DEFAULT_SPEAKER_COLORS),
             "default_edge_color": exporter.DEFAULT_EDGE_COLOR,
         }
+
+    def load_settings(self):
+        """保存された設定を読み込む。"""
+        return settings.load_settings()
+
+    def save_settings(self, data: dict):
+        """設定を保存する。"""
+        settings.save_settings(data)
+        return {"success": True}
 
     def _update_progress(self, progress: float, message: str):
         self._progress = {"progress": progress, "message": message}

@@ -44,22 +44,22 @@ class ExoSettings:
     bold: bool = False
     italic: bool = False
     soft_edge: bool = True
+    pos_x: float = 0.0
+    pos_y: float = 0.0
     # 話者ごとの文字色 (hex, BGRではなくRGB入力 → exo出力時にBGR変換)
     speaker_colors: list[str] = field(default_factory=lambda: list(DEFAULT_SPEAKER_COLORS))
     # 話者ごとの縁色
     speaker_edge_colors: list[str] = field(default_factory=lambda: [])
 
     def get_speaker_color(self, index: int) -> str:
-        """話者インデックスに対応する文字色 (BGR hex) を返す。"""
+        """話者インデックスに対応する文字色 (RGB hex) を返す。"""
         colors = self.speaker_colors or DEFAULT_SPEAKER_COLORS
-        rgb = colors[index % len(colors)]
-        return _rgb_to_bgr(rgb)
+        return colors[index % len(colors)]
 
     def get_speaker_edge_color(self, index: int) -> str:
-        """話者インデックスに対応する縁色 (BGR hex) を返す。"""
+        """話者インデックスに対応する縁色 (RGB hex) を返す。"""
         if self.speaker_edge_colors:
-            rgb = self.speaker_edge_colors[index % len(self.speaker_edge_colors)]
-            return _rgb_to_bgr(rgb)
+            return self.speaker_edge_colors[index % len(self.speaker_edge_colors)]
         return DEFAULT_EDGE_COLOR
 
     @classmethod
@@ -80,17 +80,13 @@ class ExoSettings:
             bold=bool(d.get("bold", False)),
             italic=bool(d.get("italic", False)),
             soft_edge=bool(d.get("soft_edge", True)),
+            pos_x=float(d.get("pos_x", 0.0)),
+            pos_y=float(d.get("pos_y", 0.0)),
             speaker_colors=d.get("speaker_colors", list(DEFAULT_SPEAKER_COLORS)),
             speaker_edge_colors=d.get("speaker_edge_colors", []),
         )
 
 
-def _rgb_to_bgr(rgb_hex: str) -> str:
-    """RGB hex文字列をBGR hex文字列に変換する (AviUtl exo形式用)。"""
-    rgb_hex = rgb_hex.lstrip("#")
-    if len(rgb_hex) != 6:
-        return rgb_hex
-    return rgb_hex[4:6] + rgb_hex[2:4] + rgb_hex[0:2]
 
 
 def format_timestamp_srt(seconds: float) -> str:
@@ -272,8 +268,8 @@ def export_exo(
         # [N.1] 標準描画
         lines.append(f"[{idx}.1]")
         lines.append("_name=標準描画")
-        lines.append("X=0.0")
-        lines.append("Y=0.0")
+        lines.append(f"X={settings.pos_x:.1f}")
+        lines.append(f"Y={settings.pos_y:.1f}")
         lines.append("Z=0.0")
         lines.append("拡大率=100.00")
         lines.append("透明度=0.0")

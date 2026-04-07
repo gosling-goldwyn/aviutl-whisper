@@ -395,12 +395,11 @@ class TestExporter:
         assert s.font_size == 34
 
     def test_exo_rgb_to_bgr(self):
-        """RGB→BGR変換が正しい。"""
-        from aviutl_whisper.exporter import _rgb_to_bgr
-        assert _rgb_to_bgr("ff0000") == "0000ff"  # 赤 → BGR
-        assert _rgb_to_bgr("00ff00") == "00ff00"  # 緑 → そのまま
-        assert _rgb_to_bgr("0000ff") == "ff0000"  # 青 → BGR
-        assert _rgb_to_bgr("ffffff") == "ffffff"   # 白 → そのまま
+        """exoは色をRGBそのまま使用する (BGR変換なし)。"""
+        from aviutl_whisper.exporter import ExoSettings
+        s = ExoSettings(speaker_colors=["ff0000"])
+        # RGB ff0000 がそのまま返される
+        assert s.get_speaker_color(0) == "ff0000"
 
     def test_exo_custom_settings(self, sample_segments):
         """カスタムExoSettingsでexo出力が正しく反映される。"""
@@ -415,6 +414,8 @@ class TestExporter:
             bold=True,
             italic=True,
             soft_edge=False,
+            pos_x=100.0,
+            pos_y=-50.5,
             speaker_colors=["ff0000", "0000ff"],
             speaker_edge_colors=["aaaaaa", "bbbbbb"],
         )
@@ -428,9 +429,10 @@ class TestExporter:
         assert "B=1" in text
         assert "I=1" in text
         assert "soft=0" in text
-        # ff0000 → BGR: 0000ff
-        assert "color=0000ff" in text
-        # aaaaaa → BGR: aaaaaa
+        assert "X=100.0" in text
+        assert "Y=-50.5" in text
+        # RGB がそのまま使われる
+        assert "color=ff0000" in text
         assert "color2=aaaaaa" in text
 
     def test_exo_per_speaker_colors(self, sample_segments):
@@ -441,8 +443,8 @@ class TestExporter:
             speaker_edge_colors=["111111", "222222"],
         )
         text = export_exo(sample_segments, settings=settings)
-        # Speaker 1 → ff0000 → BGR 0000ff, Speaker 2 → 00ff00 → BGR 00ff00
-        assert "color=0000ff" in text
+        # RGB がそのまま exo に出力される
+        assert "color=ff0000" in text
         assert "color=00ff00" in text
         assert "color2=111111" in text
         assert "color2=222222" in text
@@ -491,3 +493,49 @@ class TestApi:
         progress = api.get_progress()
         assert "progress" in progress
         assert "message" in progress
+
+
+# ============================================================
+# settings.py テスト
+# ============================================================
+
+class TestSettings:
+    """settings モジュールのテスト。"""
+
+    def test_load_default_settings(self, monkeypatch, tmp_path):
+        """設定ファイルが無い場合デフォルト値を返す。"""
+        from aviutl_whisper import settings
+        monkeypatch.setattr(settings, "_get_settings_path",
+                            lambda: tmp_path / "nonexistent" / "settings.json")
+        result = settings.load_settings()
+        assert result["model_size"] == "medium"
+        assert result["exo"]["font"] == "MS UI Gothic"
+
+    def test_save_and_load_settings(self, monkeypatch, tmp_path):
+        """設定を保存して再読み込みできる。"""
+        from aviutl_whisper import settings
+        path = tmp_path / "settings.json"
+        monkeypatch.setattr(settings, "_get_settings_path", lambda: path)
+
+        data = {"model_size": "large-v3", "language": "en",
+                "exo": {"font": "Arial", "font_size": 60}}
+        settings.save_settings(data)
+        assert path.exists()
+
+        loaded = settings.load_settings()
+        assert loaded["model_size"] == "large-v3"
+        assert loaded["exo"]["font"] == "Arial"
+        assert loaded["exo"]["font_size"] == 60
+        # デフォルト値がマージされている
+        assert loaded["exo"]["bold"] is False
+
+    def test_deep_merge(self):
+        """_deep_mergeがネストした辞書を正しくマージする。"""
+        from aviutl_whisper.settings import _deep_merge
+        defaults = {"a": 1, "b": {"c": 2, "d": 3}}
+        override = {"b": {"c": 99}, "e": 5}
+        result = _deep_merge(defaults, override)
+        assert result["a"] == 1
+        assert result["b"]["c"] == 99
+        assert result["b"]["d"] == 3
+        assert result["e"] == 5

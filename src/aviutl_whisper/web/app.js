@@ -14,13 +14,20 @@ const DEFAULT_SPEAKER_COLORS = [
 ];
 
 // --- 初期化 ---
-document.addEventListener("DOMContentLoaded", async () => {
+document.addEventListener("DOMContentLoaded", () => {
     initEventListeners();
+    $("#output-format").addEventListener("change", updateExoSettingsVisibility);
+    $("#num-speakers").addEventListener("change", renderSpeakerColors);
+    updateExoSettingsVisibility();
+    renderSpeakerColors();
+});
+
+// pywebview API が準備完了してからAPI呼び出し
+window.addEventListener("pywebviewready", async () => {
     await loadDeviceInfo();
     await loadExoDefaults();
     await loadFonts();
-    updateExoSettingsVisibility();
-    renderSpeakerColors();
+    await loadSavedSettings();
 });
 
 function initEventListeners() {
@@ -29,8 +36,6 @@ function initEventListeners() {
     $("#btn-cancel").addEventListener("click", cancelTranscription);
     $("#btn-save").addEventListener("click", saveResult);
     $("#btn-copy").addEventListener("click", copyResult);
-    $("#output-format").addEventListener("change", updateExoSettingsVisibility);
-    $("#num-speakers").addEventListener("change", renderSpeakerColors);
 }
 
 // --- exo設定パネルの表示/非表示 ---
@@ -148,6 +153,8 @@ function collectExoSettings() {
         bold: $("#exo-bold").checked,
         italic: $("#exo-italic").checked,
         soft_edge: $("#exo-soft-edge").checked,
+        pos_x: parseFloat($("#exo-pos-x").value) || 0,
+        pos_y: parseFloat($("#exo-pos-y").value) || 0,
         speaker_colors: speakerColors,
         speaker_edge_colors: speakerEdgeColors,
     };
@@ -302,6 +309,111 @@ async function loadDeviceInfo() {
             $("#device-info").textContent = `${info.device} | ${info.detail}`;
         }
     } catch (e) { /* ignore */ }
+}
+
+// --- 設定の保存/読み込み ---
+async function loadSavedSettings() {
+    try {
+        const saved = await pywebview.api.load_settings();
+        if (!saved) return;
+
+        // 基本設定の復元
+        if (saved.model_size) $("#model-size").value = saved.model_size;
+        if (saved.language) $("#language").value = saved.language;
+        if (saved.num_speakers) $("#num-speakers").value = saved.num_speakers;
+        if (saved.output_format) $("#output-format").value = saved.output_format;
+
+        // exo設定の復元
+        const exo = saved.exo;
+        if (exo) {
+            if (exo.font) $("#exo-font").value = exo.font;
+            if (exo.font_size != null) $("#exo-font-size").value = exo.font_size;
+            if (exo.spacing_x != null) $("#exo-spacing-x").value = exo.spacing_x;
+            if (exo.spacing_y != null) $("#exo-spacing-y").value = exo.spacing_y;
+            if (exo.display_speed != null) $("#exo-display-speed").value = exo.display_speed;
+            if (exo.align != null) $("#exo-align").value = exo.align;
+            if (exo.pos_x != null) $("#exo-pos-x").value = exo.pos_x;
+            if (exo.pos_y != null) $("#exo-pos-y").value = exo.pos_y;
+            $("#exo-bold").checked = !!exo.bold;
+            $("#exo-italic").checked = !!exo.italic;
+            $("#exo-soft-edge").checked = exo.soft_edge !== false;
+
+            // 話者色の復元はrenderSpeakerColorsで使うためexoDefaultsに反映
+            if (exo.speaker_colors) {
+                exoDefaults = exoDefaults || {};
+                exoDefaults.speaker_colors = exo.speaker_colors;
+            }
+            if (exo.speaker_edge_colors && exo.speaker_edge_colors.length > 0) {
+                exoDefaults = exoDefaults || {};
+                exoDefaults.speaker_edge_colors = exo.speaker_edge_colors;
+            }
+        }
+
+        // UI更新
+        updateExoSettingsVisibility();
+        renderSpeakerColors();
+
+        // 話者色の復元（renderSpeakerColors後）
+        if (exo?.speaker_edge_colors?.length > 0) {
+            document.querySelectorAll(".speaker-edge-hex").forEach((el, i) => {
+                if (i < exo.speaker_edge_colors.length) {
+                    el.value = exo.speaker_edge_colors[i];
+                    const picker = document.querySelector(`.speaker-edge-color[data-index="${i}"]`);
+                    if (picker) picker.value = "#" + exo.speaker_edge_colors[i];
+                }
+            });
+        }
+
+        // 自動保存リスナーを登録
+        setupAutoSave();
+    } catch (e) {
+        console.error("設定読み込みエラー:", e);
+        setupAutoSave();
+    }
+}
+
+function collectAllSettings() {
+    return {
+        model_size: $("#model-size").value,
+        language: $("#language").value,
+        num_speakers: $("#num-speakers").value,
+        output_format: $("#output-format").value,
+        exo: collectExoSettings(),
+    };
+}
+
+let saveTimer = null;
+function scheduleAutoSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+        try {
+            await pywebview.api.save_settings(collectAllSettings());
+        } catch (e) { /* ignore */ }
+    }, 500);
+}
+
+function setupAutoSave() {
+    // 基本設定
+    for (const id of ["model-size", "language", "num-speakers", "output-format"]) {
+        $(`#${id}`).addEventListener("change", () => {
+            if (id === "output-format") updateExoSettingsVisibility();
+            if (id === "num-speakers") renderSpeakerColors();
+            scheduleAutoSave();
+        });
+    }
+    // exo設定
+    const exoInputs = [
+        "exo-font", "exo-font-size", "exo-spacing-x", "exo-spacing-y",
+        "exo-display-speed", "exo-align", "exo-pos-x", "exo-pos-y",
+    ];
+    for (const id of exoInputs) {
+        $(`#${id}`).addEventListener("change", scheduleAutoSave);
+    }
+    for (const id of ["exo-bold", "exo-italic", "exo-soft-edge"]) {
+        $(`#${id}`).addEventListener("change", scheduleAutoSave);
+    }
+    // 話者色は動的なのでcontainerに委任
+    $("#speaker-colors-list").addEventListener("input", scheduleAutoSave);
 }
 
 // --- ユーティリティ ---
