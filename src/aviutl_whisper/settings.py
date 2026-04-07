@@ -29,6 +29,7 @@ DEFAULT_SETTINGS = {
                            "ffff00", "ff8000", "8080ff", "80ff80"],
         "speaker_edge_colors": [],
         "speaker_images": [],
+        "background_image": "",
     },
 }
 

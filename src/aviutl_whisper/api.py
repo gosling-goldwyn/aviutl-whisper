@@ -319,6 +319,7 @@ class Api:
             "speaker_colors": list(exporter.DEFAULT_SPEAKER_COLORS),
             "default_edge_color": exporter.DEFAULT_EDGE_COLOR,
             "speaker_images": [],
+            "background_image": "",
         }
 
     def select_image_file(self):

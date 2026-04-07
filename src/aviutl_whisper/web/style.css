@@ -400,6 +400,21 @@ input[type="color"] {
     color: var(--text);
 }
 
+.background-image-area h3 {
+    font-size: 0.95rem;
+    margin-bottom: 8px;
+    color: var(--text);
+}
+
+.bg-image-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border-radius: var(--radius);
+}
+
 .speaker-color-row {
     display: flex;
     align-items: center;

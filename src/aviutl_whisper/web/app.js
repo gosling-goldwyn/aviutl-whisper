@@ -9,6 +9,7 @@ let isProcessing = false;
 let exoDefaults = null;
 let lastSpeakers = [];
 let currentMapping = {};
+let backgroundImage = "";
 
 const DEFAULT_SPEAKER_COLORS = [
     "ffffff", "00ffff", "00ff00", "ff00ff",
@@ -42,6 +43,8 @@ function initEventListeners() {
     $("#btn-cancel").addEventListener("click", cancelTranscription);
     $("#btn-save").addEventListener("click", saveResult);
     $("#btn-copy").addEventListener("click", copyResult);
+    $("#btn-bg-image").addEventListener("click", selectBackgroundImage);
+    $("#btn-bg-image-clear").addEventListener("click", clearBackgroundImage);
 }
 
 // --- exo設定パネルの表示/非表示 ---
@@ -258,7 +261,29 @@ function collectExoSettings() {
             y: d.y || 0,
             scale: d.scale || 100,
         })),
+        background_image: backgroundImage,
     };
+}
+
+// --- 背景画像選択 ---
+async function selectBackgroundImage() {
+    try {
+        const result = await pywebview.api.select_image_file();
+        if (result) {
+            backgroundImage = result;
+            const name = result.split(/[\\/]/).pop();
+            $("#bg-image-name").textContent = name;
+            autoSave();
+        }
+    } catch (e) {
+        console.error("背景画像選択エラー:", e);
+    }
+}
+
+function clearBackgroundImage() {
+    backgroundImage = "";
+    $("#bg-image-name").textContent = "未選択";
+    autoSave();
 }
 
 // --- ファイル選択 ---
@@ -569,6 +594,13 @@ async function loadSavedSettings() {
             }));
         }
         renderSpeakerTachie();
+
+        // 背景画像の復元
+        if (exo?.background_image) {
+            backgroundImage = exo.background_image;
+            const name = backgroundImage.split(/[\\/]/).pop();
+            $("#bg-image-name").textContent = name;
+        }
 
         // 話者色の復元（renderSpeakerColors後）
         if (exo?.speaker_edge_colors?.length > 0) {

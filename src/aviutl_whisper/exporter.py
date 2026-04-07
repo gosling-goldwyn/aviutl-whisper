@@ -72,6 +72,8 @@ class ExoSettings:
     speaker_edge_colors: list[str] = field(default_factory=lambda: [])
     # 話者ごとの立ち絵画像設定
     speaker_images: list[SpeakerImageSettings] = field(default_factory=lambda: [])
+    # 背景画像パス
+    background_image: str = ""
 
     def get_speaker_color(self, index: int) -> str:
         """話者インデックスに対応する文字色 (RGB hex) を返す。"""
@@ -119,6 +121,7 @@ class ExoSettings:
             speaker_colors=d.get("speaker_colors", list(DEFAULT_SPEAKER_COLORS)),
             speaker_edge_colors=d.get("speaker_edge_colors", []),
             speaker_images=speaker_images,
+            background_image=d.get("background_image", ""),
         )
 
 
@@ -326,6 +329,7 @@ def export_exo(
 
     各セグメントをテキストオブジェクトとしてタイムライン上に配置する。
     話者ごとにレイヤーを分け、色を変える。
+    レイヤー順: 背景画像 → 立ち絵 → 字幕テキスト (連番)
     """
     if not segments:
         return ""
@@ -333,9 +337,8 @@ def export_exo(
     if settings is None:
         settings = ExoSettings(**kwargs) if kwargs else ExoSettings()
 
-    # 話者→レイヤー/色マッピング
+    # 話者リスト
     speakers = sorted(set(s.speaker or "Speaker 1" for s in segments))
-    speaker_layer = {spk: i + 1 for i, spk in enumerate(speakers)}
     speaker_color = {
         spk: settings.get_speaker_color(i)
         for i, spk in enumerate(speakers)
@@ -345,11 +348,36 @@ def export_exo(
         for i, spk in enumerate(speakers)
     }
 
+    # 立ち絵が設定されている話者を把握
+    tachie_speakers = []
+    for i, spk in enumerate(speakers):
+        img = settings.get_speaker_image(i)
+        if img is not None:
+            tachie_speakers.append((i, spk, img))
+
+    # レイヤー割り当て (連番: 背景→立ち絵→字幕)
+    next_layer = 1
+    bg_layer = None
+    if settings.background_image:
+        bg_layer = next_layer
+        next_layer += 1
+
+    tachie_layer = {}
+    for i, spk, _ in tachie_speakers:
+        tachie_layer[spk] = next_layer
+        next_layer += 1
+
+    speaker_text_layer = {}
+    for spk in speakers:
+        speaker_text_layer[spk] = next_layer
+        next_layer += 1
+
     # 全体の長さ (フレーム)
     max_end = max(s.end for s in segments)
     total_frames = int(max_end * settings.fps) + 1
 
     lines = []
+    obj_idx = 0
 
     # [exedit] ヘッダー
     lines.append("[exedit]")
@@ -361,22 +389,52 @@ def export_exo(
     lines.append("audio_rate=44100")
     lines.append("audio_ch=2")
 
-    for idx, seg in enumerate(segments):
+    # 背景画像オブジェクト
+    if settings.background_image and bg_layer is not None:
+        lines.append(f"[{obj_idx}]")
+        lines.append("start=1")
+        lines.append(f"end={total_frames}")
+        lines.append(f"layer={bg_layer}")
+        lines.append("overlay=1")
+        lines.append("camera=0")
+
+        lines.append(f"[{obj_idx}.0]")
+        lines.append("_name=画像ファイル")
+        lines.append(f"file={settings.background_image}")
+
+        lines.append(f"[{obj_idx}.1]")
+        lines.append("_name=標準描画")
+        lines.append("X=0.0")
+        lines.append("Y=0.0")
+        lines.append("Z=0.0")
+        lines.append("拡大率=100.00")
+        lines.append("透明度=0.0")
+        lines.append("回転=0.00")
+        lines.append("blend=0")
+        obj_idx += 1
+
+    # 立ち絵画像オブジェクト
+    for i, spk, img_settings in tachie_speakers:
+        layer = tachie_layer[spk]
+        intervals = _build_speaker_intervals(segments, spk, settings.fps, total_frames)
+        obj_idx = _emit_image_objects(lines, intervals, img_settings, layer, obj_idx)
+
+    # テキストオブジェクト
+    for seg in segments:
         speaker = seg.speaker or "Speaker 1"
         start_frame = max(1, int(seg.start * settings.fps))
         end_frame = int(seg.end * settings.fps)
         if end_frame <= start_frame:
             end_frame = start_frame + 1
 
-        layer = speaker_layer[speaker]
+        layer = speaker_text_layer[speaker]
         color = speaker_color[speaker]
         edge_color = speaker_edge[speaker]
-        display_text = seg.text
 
-        hex_text = _encode_exo_text(display_text)
+        hex_text = _encode_exo_text(seg.text)
 
         # [N] オブジェクトヘッダー
-        lines.append(f"[{idx}]")
+        lines.append(f"[{obj_idx}]")
         lines.append(f"start={start_frame}")
         lines.append(f"end={end_frame}")
         lines.append(f"layer={layer}")
@@ -384,7 +442,7 @@ def export_exo(
         lines.append("camera=0")
 
         # [N.0] テキストオブジェクト
-        lines.append(f"[{idx}.0]")
+        lines.append(f"[{obj_idx}.0]")
         lines.append("_name=テキスト")
         lines.append(f"サイズ={settings.font_size}")
         lines.append(f"表示速度={settings.display_speed:.1f}")
@@ -407,7 +465,7 @@ def export_exo(
         lines.append(f"text={hex_text}")
 
         # [N.1] 標準描画
-        lines.append(f"[{idx}.1]")
+        lines.append(f"[{obj_idx}.1]")
         lines.append("_name=標準描画")
         lines.append(f"X={settings.pos_x:.1f}")
         lines.append(f"Y={settings.pos_y:.1f}")
@@ -416,16 +474,7 @@ def export_exo(
         lines.append("透明度=0.0")
         lines.append("回転=0.00")
         lines.append("blend=0")
-
-    # 立ち絵画像オブジェクトの出力
-    next_idx = len(segments)
-    for i, spk in enumerate(speakers):
-        img_settings = settings.get_speaker_image(i)
-        if img_settings is None:
-            continue
-        image_layer = 101 + i
-        intervals = _build_speaker_intervals(segments, spk, settings.fps, total_frames)
-        next_idx = _emit_image_objects(lines, intervals, img_settings, image_layer, next_idx)
+        obj_idx += 1
 
     return "\r\n".join(lines) + "\r\n"
 

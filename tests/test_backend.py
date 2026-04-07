@@ -499,8 +499,13 @@ class TestExporter:
         assert "file=C:\\img\\s1.png" in text
         assert "file=C:\\img\\s2.png" in text
         assert "色調補正" in text
-        assert "layer=101" in text
-        assert "layer=102" in text
+        assert "layer=101" in text or "layer=1" in text  # tachie layers
+        assert "layer=102" in text or "layer=2" in text
+        # New layer structure: tachie 1,2 → text 3,4 (consecutive, no gaps)
+        assert "layer=1\r\n" in text
+        assert "layer=2\r\n" in text
+        assert "layer=3\r\n" in text
+        assert "layer=4\r\n" in text
 
     def test_exo_without_tachie(self, sample_segments):
         """立ち絵なしのexo出力に画像オブジェクトが含まれない。"""
@@ -584,6 +589,91 @@ class TestExporter:
         assert os.path.exists(result)
         content = open(result, encoding="utf-8").read()
         assert "こんにちは" in content
+
+    def test_exo_background_image(self, sample_segments):
+        """背景画像が設定されている場合、layer=1に画像ファイルオブジェクトが出力される。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(background_image="C:\\bg\\background.png")
+        text = export_exo(sample_segments, settings=settings)
+        # 背景画像がexoに含まれる
+        assert "file=C:\\bg\\background.png" in text
+        # 背景画像は最初のオブジェクト ([0])
+        lines = text.split("\r\n")
+        obj0_idx = lines.index("[0]")
+        # 背景は layer=1
+        assert "layer=1" in lines[obj0_idx + 3]
+        # start=1, end=total_frames
+        assert lines[obj0_idx + 1] == "start=1"
+        # テキストは layer=2, 3 (2話者、背景あり、立ち絵なし)
+        assert "layer=2\r\n" in text
+        assert "layer=3\r\n" in text
+
+    def test_exo_background_image_empty(self, sample_segments):
+        """背景画像が空の場合、画像ファイルオブジェクトが出力されない。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(background_image="")
+        text = export_exo(sample_segments, settings=settings)
+        # 背景画像関連は含まれない (ただし立ち絵の画像ファイルとは区別)
+        # テキストのlayerが1から始まる
+        assert "layer=1\r\n" in text
+
+    def test_exo_layer_order_bg_tachie_text(self, sample_segments):
+        """レイヤー順が 背景→立ち絵→テキスト の連番になる。"""
+        from aviutl_whisper.exporter import ExoSettings, SpeakerImageSettings, export_exo
+        settings = ExoSettings(
+            background_image="C:\\bg\\bg.png",
+            speaker_images=[
+                SpeakerImageSettings(file="C:\\img\\s1.png", x=0, y=0, scale=100),
+                SpeakerImageSettings(file="C:\\img\\s2.png", x=0, y=0, scale=100),
+            ],
+        )
+        text = export_exo(sample_segments, settings=settings)
+        import re
+        layers = [int(m.group(1)) for m in re.finditer(r"layer=(\d+)", text)]
+        unique_layers = sorted(set(layers))
+        # 背景=1, 立ち絵=2,3, テキスト=4,5 → 連番
+        assert unique_layers == [1, 2, 3, 4, 5]
+
+    def test_exo_layer_order_tachie_text_no_bg(self, sample_segments):
+        """背景なし: 立ち絵→テキスト の連番。"""
+        from aviutl_whisper.exporter import ExoSettings, SpeakerImageSettings, export_exo
+        settings = ExoSettings(
+            speaker_images=[
+                SpeakerImageSettings(file="C:\\img\\s1.png", x=0, y=0, scale=100),
+                SpeakerImageSettings(file="C:\\img\\s2.png", x=0, y=0, scale=100),
+            ],
+        )
+        text = export_exo(sample_segments, settings=settings)
+        import re
+        layers = [int(m.group(1)) for m in re.finditer(r"layer=(\d+)", text)]
+        unique_layers = sorted(set(layers))
+        # 立ち絵=1,2, テキスト=3,4 → 連番
+        assert unique_layers == [1, 2, 3, 4]
+
+    def test_exo_layer_order_text_only(self, sample_segments):
+        """背景も立ち絵もなし: テキストのみ layer=1,2。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings()
+        text = export_exo(sample_segments, settings=settings)
+        import re
+        layers = [int(m.group(1)) for m in re.finditer(r"layer=(\d+)", text)]
+        unique_layers = sorted(set(layers))
+        assert unique_layers == [1, 2]
+
+    def test_exo_settings_background_image(self):
+        """ExoSettingsのbackground_imageフィールドが正しく動作する。"""
+        from aviutl_whisper.exporter import ExoSettings
+        s = ExoSettings(background_image="C:\\bg\\test.png")
+        assert s.background_image == "C:\\bg\\test.png"
+
+    def test_exo_settings_from_dict_background(self):
+        """from_dictでbackground_imageが正しく読み込まれる。"""
+        from aviutl_whisper.exporter import ExoSettings
+        s = ExoSettings.from_dict({"background_image": "C:\\bg\\test.png"})
+        assert s.background_image == "C:\\bg\\test.png"
+        # 空の場合
+        s2 = ExoSettings.from_dict({})
+        assert s2.background_image == ""
 
 
 # ============================================================
