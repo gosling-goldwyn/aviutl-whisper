@@ -345,6 +345,119 @@ class TestExporter:
         content = open(result, encoding="cp932").read()
         assert "[exedit]" in content
 
+    def test_exo_settings_dataclass(self):
+        """ExoSettingsのデフォルト値が正しい。"""
+        from aviutl_whisper.exporter import ExoSettings
+        s = ExoSettings()
+        assert s.font == "MS UI Gothic"
+        assert s.font_size == 34
+        assert s.spacing_x == 0
+        assert s.spacing_y == 0
+        assert s.display_speed == 0.0
+        assert s.align == 4
+        assert s.bold is False
+        assert s.italic is False
+        assert s.soft_edge is True
+
+    def test_exo_settings_from_dict(self):
+        """ExoSettings.from_dict()がフロントエンドの辞書を正しくパースする。"""
+        from aviutl_whisper.exporter import ExoSettings
+        d = {
+            "font": "Meiryo",
+            "font_size": 48,
+            "spacing_x": 5,
+            "spacing_y": 10,
+            "display_speed": 1.5,
+            "align": 7,
+            "bold": True,
+            "italic": True,
+            "soft_edge": False,
+            "speaker_colors": ["ff0000", "0000ff"],
+            "speaker_edge_colors": ["111111", "222222"],
+        }
+        s = ExoSettings.from_dict(d)
+        assert s.font == "Meiryo"
+        assert s.font_size == 48
+        assert s.spacing_x == 5
+        assert s.spacing_y == 10
+        assert s.display_speed == 1.5
+        assert s.align == 7
+        assert s.bold is True
+        assert s.italic is True
+        assert s.soft_edge is False
+        assert s.speaker_colors == ["ff0000", "0000ff"]
+        assert s.speaker_edge_colors == ["111111", "222222"]
+
+    def test_exo_settings_from_empty_dict(self):
+        """ExoSettings.from_dict(None)はデフォルト値を返す。"""
+        from aviutl_whisper.exporter import ExoSettings
+        s = ExoSettings.from_dict(None)
+        assert s.font_size == 34
+
+    def test_exo_rgb_to_bgr(self):
+        """RGB→BGR変換が正しい。"""
+        from aviutl_whisper.exporter import _rgb_to_bgr
+        assert _rgb_to_bgr("ff0000") == "0000ff"  # 赤 → BGR
+        assert _rgb_to_bgr("00ff00") == "00ff00"  # 緑 → そのまま
+        assert _rgb_to_bgr("0000ff") == "ff0000"  # 青 → BGR
+        assert _rgb_to_bgr("ffffff") == "ffffff"   # 白 → そのまま
+
+    def test_exo_custom_settings(self, sample_segments):
+        """カスタムExoSettingsでexo出力が正しく反映される。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(
+            font="Meiryo",
+            font_size=48,
+            spacing_x=5,
+            spacing_y=10,
+            display_speed=1.5,
+            align=7,
+            bold=True,
+            italic=True,
+            soft_edge=False,
+            speaker_colors=["ff0000", "0000ff"],
+            speaker_edge_colors=["aaaaaa", "bbbbbb"],
+        )
+        text = export_exo(sample_segments, settings=settings)
+        assert "font=Meiryo" in text
+        assert "サイズ=48" in text
+        assert "spacing_x=5" in text
+        assert "spacing_y=10" in text
+        assert "表示速度=1.5" in text
+        assert "align=7" in text
+        assert "B=1" in text
+        assert "I=1" in text
+        assert "soft=0" in text
+        # ff0000 → BGR: 0000ff
+        assert "color=0000ff" in text
+        # aaaaaa → BGR: aaaaaa
+        assert "color2=aaaaaa" in text
+
+    def test_exo_per_speaker_colors(self, sample_segments):
+        """話者ごとの色が正しく割り当てられる。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(
+            speaker_colors=["ff0000", "00ff00"],
+            speaker_edge_colors=["111111", "222222"],
+        )
+        text = export_exo(sample_segments, settings=settings)
+        # Speaker 1 → ff0000 → BGR 0000ff, Speaker 2 → 00ff00 → BGR 00ff00
+        assert "color=0000ff" in text
+        assert "color=00ff00" in text
+        assert "color2=111111" in text
+        assert "color2=222222" in text
+
+    def test_exo_export_to_file_with_settings(self, sample_segments, tmp_path):
+        """ExoSettingsを使ったファイル出力が正しい。"""
+        from aviutl_whisper.exporter import ExoSettings, export_to_file
+        settings = ExoSettings(font="Arial", font_size=60)
+        path = str(tmp_path / "custom.exo")
+        result = export_to_file(sample_segments, path, "exo", exo_settings=settings)
+        assert os.path.exists(result)
+        content = open(result, encoding="cp932").read()
+        assert "font=Arial" in content
+        assert "サイズ=60" in content
+
     def test_export_to_file(self, sample_segments, tmp_path):
         """ファイルへのエクスポートが動作する。"""
         from aviutl_whisper.exporter import export_to_file

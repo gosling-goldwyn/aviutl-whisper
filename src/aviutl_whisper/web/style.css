@@ -256,3 +256,97 @@ footer {
 .hidden {
     display: none !important;
 }
+
+/* exo設定パネル */
+input[type="number"] {
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 0.9rem;
+    width: 100%;
+}
+
+input[type="number"]:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+input[type="color"] {
+    width: 40px;
+    height: 32px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-input);
+    cursor: pointer;
+}
+
+.settings-row {
+    display: flex;
+    gap: 20px;
+    flex-wrap: wrap;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.9rem;
+    cursor: pointer;
+    color: var(--text);
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+    cursor: pointer;
+}
+
+.speaker-colors-area h3 {
+    font-size: 0.95rem;
+    margin-bottom: 10px;
+    color: var(--text);
+}
+
+.speaker-color-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border-radius: var(--radius);
+}
+
+.speaker-color-row .speaker-label {
+    min-width: 80px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.speaker-color-row .color-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+}
+
+.speaker-color-row input[type="text"].hex-input {
+    width: 80px;
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.82rem;
+    font-family: "Consolas", monospace;
+}
+
+.speaker-color-row input[type="text"].hex-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}

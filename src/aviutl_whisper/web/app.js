@@ -6,11 +6,21 @@ const hide = (el) => el.classList.add("hidden");
 
 let selectedFile = null;
 let isProcessing = false;
+let exoDefaults = null;
+
+const DEFAULT_SPEAKER_COLORS = [
+    "ffffff", "00ffff", "00ff00", "ff00ff",
+    "ffff00", "ff8000", "8080ff", "80ff80",
+];
 
 // --- 初期化 ---
 document.addEventListener("DOMContentLoaded", async () => {
     initEventListeners();
     await loadDeviceInfo();
+    await loadExoDefaults();
+    await loadFonts();
+    updateExoSettingsVisibility();
+    renderSpeakerColors();
 });
 
 function initEventListeners() {
@@ -19,6 +29,128 @@ function initEventListeners() {
     $("#btn-cancel").addEventListener("click", cancelTranscription);
     $("#btn-save").addEventListener("click", saveResult);
     $("#btn-copy").addEventListener("click", copyResult);
+    $("#output-format").addEventListener("change", updateExoSettingsVisibility);
+    $("#num-speakers").addEventListener("change", renderSpeakerColors);
+}
+
+// --- exo設定パネルの表示/非表示 ---
+function updateExoSettingsVisibility() {
+    const exoSection = $("#exo-settings-section");
+    if ($("#output-format").value === "exo") {
+        show(exoSection);
+    } else {
+        hide(exoSection);
+    }
+}
+
+// --- フォント一覧読み込み ---
+async function loadFonts() {
+    try {
+        const fonts = await pywebview.api.get_system_fonts();
+        if (fonts && fonts.length > 0) {
+            const select = $("#exo-font");
+            select.innerHTML = "";
+            for (const font of fonts) {
+                const opt = document.createElement("option");
+                opt.value = font;
+                opt.textContent = font;
+                if (font === (exoDefaults?.font || "MS UI Gothic")) {
+                    opt.selected = true;
+                }
+                select.appendChild(opt);
+            }
+        }
+    } catch (e) {
+        console.error("フォント一覧取得エラー:", e);
+    }
+}
+
+// --- exoデフォルト値の読み込み ---
+async function loadExoDefaults() {
+    try {
+        exoDefaults = await pywebview.api.get_exo_defaults();
+    } catch (e) {
+        console.error("exoデフォルト取得エラー:", e);
+    }
+}
+
+// --- 話者ごとの色設定UI生成 ---
+function renderSpeakerColors() {
+    const container = $("#speaker-colors-list");
+    const numValue = $("#num-speakers").value;
+    const numSpeakers = numValue === "auto" ? 2 : parseInt(numValue);
+    const colors = exoDefaults?.speaker_colors || DEFAULT_SPEAKER_COLORS;
+    const edgeColor = exoDefaults?.default_edge_color || "000000";
+
+    container.innerHTML = "";
+    for (let i = 0; i < numSpeakers; i++) {
+        const color = colors[i % colors.length];
+        const row = document.createElement("div");
+        row.className = "speaker-color-row";
+        row.innerHTML = `
+            <span class="speaker-label">話者 ${i + 1}</span>
+            <div class="color-group">
+                <label>文字色</label>
+                <input type="color" class="speaker-text-color" data-index="${i}" value="#${color}">
+                <input type="text" class="hex-input speaker-text-hex" data-index="${i}" value="${color}" maxlength="6">
+            </div>
+            <div class="color-group">
+                <label>縁色</label>
+                <input type="color" class="speaker-edge-color" data-index="${i}" value="#${edgeColor}">
+                <input type="text" class="hex-input speaker-edge-hex" data-index="${i}" value="${edgeColor}" maxlength="6">
+            </div>
+        `;
+        container.appendChild(row);
+    }
+
+    // カラーピッカーとhex入力を同期
+    container.querySelectorAll("input[type='color']").forEach(picker => {
+        picker.addEventListener("input", (e) => {
+            const idx = e.target.dataset.index;
+            const isEdge = e.target.classList.contains("speaker-edge-color");
+            const hexClass = isEdge ? ".speaker-edge-hex" : ".speaker-text-hex";
+            const hexInput = container.querySelector(`${hexClass}[data-index="${idx}"]`);
+            if (hexInput) hexInput.value = e.target.value.replace("#", "");
+        });
+    });
+    container.querySelectorAll(".hex-input").forEach(input => {
+        input.addEventListener("input", (e) => {
+            const idx = e.target.dataset.index;
+            const isEdge = e.target.classList.contains("speaker-edge-hex");
+            const colorClass = isEdge ? ".speaker-edge-color" : ".speaker-text-color";
+            const picker = container.querySelector(`${colorClass}[data-index="${idx}"]`);
+            const hex = e.target.value.replace("#", "");
+            if (hex.length === 6 && /^[0-9a-fA-F]{6}$/.test(hex) && picker) {
+                picker.value = "#" + hex;
+            }
+        });
+    });
+}
+
+// --- exo設定を収集 ---
+function collectExoSettings() {
+    const speakerColors = [];
+    const speakerEdgeColors = [];
+    document.querySelectorAll(".speaker-text-hex").forEach(el => {
+        speakerColors.push(el.value.replace("#", ""));
+    });
+    document.querySelectorAll(".speaker-edge-hex").forEach(el => {
+        speakerEdgeColors.push(el.value.replace("#", ""));
+    });
+
+    return {
+        font: $("#exo-font").value,
+        font_size: parseInt($("#exo-font-size").value) || 34,
+        spacing_x: parseInt($("#exo-spacing-x").value) || 0,
+        spacing_y: parseInt($("#exo-spacing-y").value) || 0,
+        display_speed: parseFloat($("#exo-display-speed").value) || 0,
+        align: parseInt($("#exo-align").value),
+        bold: $("#exo-bold").checked,
+        italic: $("#exo-italic").checked,
+        soft_edge: $("#exo-soft-edge").checked,
+        speaker_colors: speakerColors,
+        speaker_edge_colors: speakerEdgeColors,
+    };
 }
 
 // --- ファイル選択 ---
@@ -75,6 +207,10 @@ async function startTranscription() {
             output_format: $("#output-format").value,
         };
 
+        if (settings.output_format === "exo") {
+            settings.exo_settings = collectExoSettings();
+        }
+
         const result = await pywebview.api.transcribe(selectedFile, settings);
 
         clearInterval(pollId);
@@ -118,7 +254,8 @@ function showResult(result) {
 async function saveResult() {
     try {
         const format = $("#output-format").value;
-        const result = await pywebview.api.save_result(format);
+        const exoSettings = format === "exo" ? collectExoSettings() : null;
+        const result = await pywebview.api.save_result(format, exoSettings);
         if (result && result.success) {
             alert("保存しました: " + result.path);
         }

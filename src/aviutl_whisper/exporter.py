@@ -2,9 +2,95 @@
 
 import csv
 import io
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .transcriber import TranscriptionSegment
+
+
+# AviUtl exo の align 値
+EXO_ALIGN = {
+    "左上": 0, "上中央": 1, "右上": 2,
+    "左中": 3, "中央": 4, "右中": 5,
+    "左下": 6, "下中央": 7, "右下": 8,
+}
+
+DEFAULT_SPEAKER_COLORS = [
+    "ffffff",  # 白
+    "00ffff",  # シアン
+    "00ff00",  # 緑
+    "ff00ff",  # マゼンタ
+    "ffff00",  # 黄
+    "ff8000",  # オレンジ
+    "8080ff",  # 薄青
+    "80ff80",  # 薄緑
+]
+
+DEFAULT_EDGE_COLOR = "000000"
+
+
+@dataclass
+class ExoSettings:
+    """AviUtl exo出力の詳細設定。"""
+    fps: float = 30.0
+    width: int = 1920
+    height: int = 1080
+    font: str = "MS UI Gothic"
+    font_size: int = 34
+    spacing_x: int = 0
+    spacing_y: int = 0
+    display_speed: float = 0.0
+    align: int = 4
+    bold: bool = False
+    italic: bool = False
+    soft_edge: bool = True
+    # 話者ごとの文字色 (hex, BGRではなくRGB入力 → exo出力時にBGR変換)
+    speaker_colors: list[str] = field(default_factory=lambda: list(DEFAULT_SPEAKER_COLORS))
+    # 話者ごとの縁色
+    speaker_edge_colors: list[str] = field(default_factory=lambda: [])
+
+    def get_speaker_color(self, index: int) -> str:
+        """話者インデックスに対応する文字色 (BGR hex) を返す。"""
+        colors = self.speaker_colors or DEFAULT_SPEAKER_COLORS
+        rgb = colors[index % len(colors)]
+        return _rgb_to_bgr(rgb)
+
+    def get_speaker_edge_color(self, index: int) -> str:
+        """話者インデックスに対応する縁色 (BGR hex) を返す。"""
+        if self.speaker_edge_colors:
+            rgb = self.speaker_edge_colors[index % len(self.speaker_edge_colors)]
+            return _rgb_to_bgr(rgb)
+        return DEFAULT_EDGE_COLOR
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ExoSettings":
+        """フロントエンドから渡された辞書からExoSettingsを生成する。"""
+        if not d:
+            return cls()
+        return cls(
+            fps=float(d.get("fps", 30.0)),
+            width=int(d.get("width", 1920)),
+            height=int(d.get("height", 1080)),
+            font=d.get("font", "MS UI Gothic"),
+            font_size=int(d.get("font_size", 34)),
+            spacing_x=int(d.get("spacing_x", 0)),
+            spacing_y=int(d.get("spacing_y", 0)),
+            display_speed=float(d.get("display_speed", 0.0)),
+            align=int(d.get("align", 4)),
+            bold=bool(d.get("bold", False)),
+            italic=bool(d.get("italic", False)),
+            soft_edge=bool(d.get("soft_edge", True)),
+            speaker_colors=d.get("speaker_colors", list(DEFAULT_SPEAKER_COLORS)),
+            speaker_edge_colors=d.get("speaker_edge_colors", []),
+        )
+
+
+def _rgb_to_bgr(rgb_hex: str) -> str:
+    """RGB hex文字列をBGR hex文字列に変換する (AviUtl exo形式用)。"""
+    rgb_hex = rgb_hex.lstrip("#")
+    if len(rgb_hex) != 6:
+        return rgb_hex
+    return rgb_hex[4:6] + rgb_hex[2:4] + rgb_hex[0:2]
 
 
 def format_timestamp_srt(seconds: float) -> str:
@@ -94,11 +180,8 @@ def _encode_exo_text(text: str) -> str:
 
 def export_exo(
     segments: list[TranscriptionSegment],
-    fps: float = 30.0,
-    width: int = 1920,
-    height: int = 1080,
-    font: str = "MS UI Gothic",
-    font_size: int = 34,
+    settings: ExoSettings | None = None,
+    **kwargs,
 ) -> str:
     """AviUtl拡張編集のexo形式で出力する。
 
@@ -108,35 +191,32 @@ def export_exo(
     if not segments:
         return ""
 
+    if settings is None:
+        settings = ExoSettings(**kwargs) if kwargs else ExoSettings()
+
     # 話者→レイヤー/色マッピング
     speakers = sorted(set(s.speaker or "Speaker 1" for s in segments))
-    speaker_colors = [
-        "ffffff",  # 白
-        "00ffff",  # シアン (BGR: ffff00 → exoはBGR)
-        "00ff00",  # 緑
-        "ff00ff",  # マゼンタ
-        "ffff00",  # 黄
-        "ff8000",  # オレンジ
-        "8080ff",  # 薄青
-        "80ff80",  # 薄緑
-    ]
     speaker_layer = {spk: i + 1 for i, spk in enumerate(speakers)}
     speaker_color = {
-        spk: speaker_colors[i % len(speaker_colors)]
+        spk: settings.get_speaker_color(i)
+        for i, spk in enumerate(speakers)
+    }
+    speaker_edge = {
+        spk: settings.get_speaker_edge_color(i)
         for i, spk in enumerate(speakers)
     }
 
     # 全体の長さ (フレーム)
     max_end = max(s.end for s in segments)
-    total_frames = int(max_end * fps) + 1
+    total_frames = int(max_end * settings.fps) + 1
 
     lines = []
 
     # [exedit] ヘッダー
     lines.append("[exedit]")
-    lines.append(f"width={width}")
-    lines.append(f"height={height}")
-    lines.append(f"rate={int(fps)}")
+    lines.append(f"width={settings.width}")
+    lines.append(f"height={settings.height}")
+    lines.append(f"rate={int(settings.fps)}")
     lines.append("scale=1")
     lines.append(f"length={total_frames}")
     lines.append("audio_rate=44100")
@@ -144,13 +224,14 @@ def export_exo(
 
     for idx, seg in enumerate(segments):
         speaker = seg.speaker or "Speaker 1"
-        start_frame = max(1, int(seg.start * fps))
-        end_frame = int(seg.end * fps)
+        start_frame = max(1, int(seg.start * settings.fps))
+        end_frame = int(seg.end * settings.fps)
         if end_frame <= start_frame:
             end_frame = start_frame + 1
 
         layer = speaker_layer[speaker]
         color = speaker_color[speaker]
+        edge_color = speaker_edge[speaker]
         display_text = seg.text
         if len(speakers) > 1:
             display_text = f"[{speaker}] {seg.text}"
@@ -168,24 +249,24 @@ def export_exo(
         # [N.0] テキストオブジェクト
         lines.append(f"[{idx}.0]")
         lines.append("_name=テキスト")
-        lines.append(f"サイズ={font_size}")
-        lines.append("表示速度=0.0")
+        lines.append(f"サイズ={settings.font_size}")
+        lines.append(f"表示速度={settings.display_speed:.1f}")
         lines.append("文字毎に個別オブジェクト=0")
         lines.append("移動座標上に表示する=0")
         lines.append("自動スクロール=0")
-        lines.append("B=0")
-        lines.append("I=0")
+        lines.append(f"B={1 if settings.bold else 0}")
+        lines.append(f"I={1 if settings.italic else 0}")
         lines.append("type=0")
         lines.append("autoadjust=0")
-        lines.append("soft=1")
+        lines.append(f"soft={1 if settings.soft_edge else 0}")
         lines.append("monospace=0")
-        lines.append("align=4")
-        lines.append("spacing_x=0")
-        lines.append("spacing_y=0")
+        lines.append(f"align={settings.align}")
+        lines.append(f"spacing_x={settings.spacing_x}")
+        lines.append(f"spacing_y={settings.spacing_y}")
         lines.append("precision=1")
         lines.append(f"color={color}")
-        lines.append("color2=000000")
-        lines.append(f"font={font}")
+        lines.append(f"color2={edge_color}")
+        lines.append(f"font={settings.font}")
         lines.append(f"text={hex_text}")
 
         # [N.1] 標準描画
@@ -215,6 +296,7 @@ def export_to_file(
     segments: list[TranscriptionSegment],
     output_path: str,
     format_type: str = "text",
+    exo_settings: ExoSettings | None = None,
 ) -> str:
     """指定フォーマットでファイルに出力する。
 
@@ -233,7 +315,10 @@ def export_to_file(
     if path.suffix.lower() != ext:
         path = path.with_suffix(ext)
 
-    content = export_fn(segments)
+    if format_type == "exo":
+        content = export_exo(segments, settings=exo_settings)
+    else:
+        content = export_fn(segments)
 
     # exo は CP932 (Shift_JIS) エンコーディング
     encoding = "cp932" if format_type == "exo" else "utf-8"
