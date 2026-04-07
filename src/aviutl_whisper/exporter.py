@@ -229,8 +229,6 @@ def export_exo(
         color = speaker_color[speaker]
         edge_color = speaker_edge[speaker]
         display_text = seg.text
-        if len(speakers) > 1:
-            display_text = f"[{speaker}] {seg.text}"
 
         hex_text = _encode_exo_text(display_text)
 
