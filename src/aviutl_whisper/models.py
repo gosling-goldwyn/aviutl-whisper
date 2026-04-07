@@ -77,18 +77,32 @@ def load_whisper_model(
         progress_callback(0.0, f"Whisperモデル({model_size})を準備中...")
 
     if device == "auto":
-        device, compute_type = _detect_device()
+        device, compute_type = _detect_device(model_size)
     else:
         compute_type = "float16" if device == "cuda" else "int8"
 
     logger.info("Whisperモデル読み込み: size=%s, device=%s, compute=%s", model_size, device, compute_type)
 
-    model = WhisperModel(
-        WHISPER_MODELS[model_size],
-        device=device,
-        compute_type=compute_type,
-        download_root=str(get_whisper_model_dir()),
-    )
+    try:
+        model = WhisperModel(
+            WHISPER_MODELS[model_size],
+            device=device,
+            compute_type=compute_type,
+            download_root=str(get_whisper_model_dir()),
+        )
+    except Exception as e:
+        if device == "cuda":
+            logger.warning("CUDA読み込み失敗、CPUにフォールバック: %s", e)
+            if progress_callback:
+                progress_callback(0.0, f"GPU失敗、CPUで再試行中...")
+            model = WhisperModel(
+                WHISPER_MODELS[model_size],
+                device="cpu",
+                compute_type="int8",
+                download_root=str(get_whisper_model_dir()),
+            )
+        else:
+            raise
 
     if progress_callback:
         progress_callback(1.0, "Whisperモデル準備完了")
@@ -149,15 +163,25 @@ def load_speechbrain_model(progress_callback: ProgressCallback | None = None):
     return model
 
 
-def _detect_device() -> tuple[str, str]:
-    """GPU/CPUを自動検出する。ctranslate2 → torch の順でCUDAを確認。"""
+def _detect_device(model_size: str = "medium") -> tuple[str, str]:
+    """GPU/CPUを自動検出する。ctranslate2 → torch の順でCUDAを確認。
+
+    大きなモデル (large-v3) は int8_float16 を使いVRAMを節約する。
+    """
+    is_large = model_size.startswith("large")
+
     # ctranslate2 (faster-whisper のバックエンド) のCUDAサポートを優先確認
     try:
         import ctranslate2
         cuda_types = ctranslate2.get_supported_compute_types("cuda")
         if cuda_types:
-            compute = "float16" if "float16" in cuda_types else "int8"
-            logger.info("CUDA GPU検出 (ctranslate2): compute=%s", compute)
+            if is_large and "int8_float16" in cuda_types:
+                compute = "int8_float16"
+            elif "float16" in cuda_types:
+                compute = "float16"
+            else:
+                compute = "int8"
+            logger.info("CUDA GPU検出 (ctranslate2): compute=%s (model=%s)", compute, model_size)
             return "cuda", compute
     except Exception:
         pass
@@ -166,8 +190,9 @@ def _detect_device() -> tuple[str, str]:
     try:
         import torch
         if torch.cuda.is_available():
+            compute = "int8_float16" if is_large else "float16"
             logger.info("CUDA GPU検出 (torch): %s", torch.cuda.get_device_name(0))
-            return "cuda", "float16"
+            return "cuda", compute
     except ImportError:
         pass
 

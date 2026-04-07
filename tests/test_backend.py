@@ -675,6 +675,70 @@ class TestExporter:
         s2 = ExoSettings.from_dict({})
         assert s2.background_image == ""
 
+    def test_wrap_text_basic(self):
+        """_wrap_textが指定文字数で改行する。"""
+        from aviutl_whisper.exporter import _wrap_text
+        assert _wrap_text("あいうえおかきくけこ", 5) == "あいうえお\nかきくけこ"
+
+    def test_wrap_text_short(self):
+        """_wrap_textが短いテキストをそのまま返す。"""
+        from aviutl_whisper.exporter import _wrap_text
+        assert _wrap_text("abc", 10) == "abc"
+
+    def test_wrap_text_zero(self):
+        """_wrap_textが0の場合テキストをそのまま返す。"""
+        from aviutl_whisper.exporter import _wrap_text
+        text = "あいうえおかきくけこさしすせそ"
+        assert _wrap_text(text, 0) == text
+
+    def test_wrap_text_preserves_existing_newlines(self):
+        """_wrap_textが既存の改行を保持する。"""
+        from aviutl_whisper.exporter import _wrap_text
+        assert _wrap_text("あいう\nえおか", 5) == "あいう\nえおか"
+
+    def test_wrap_text_long(self):
+        """_wrap_textが長いテキストを複数行に分割する。"""
+        from aviutl_whisper.exporter import _wrap_text
+        result = _wrap_text("123456789012345", 5)
+        assert result == "12345\n67890\n12345"
+
+    def test_exo_text_wrapping(self, sample_segments):
+        """exo出力でテキストが改行される。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo, _encode_exo_text
+        settings = ExoSettings(max_chars_per_line=5)
+        text = export_exo(sample_segments, settings=settings)
+        # "こんにちは" は5文字なので改行なし
+        hello_hex = _encode_exo_text("こんにちは")
+        assert hello_hex in text
+
+    def test_exo_settings_max_chars(self):
+        """ExoSettingsのmax_chars_per_lineフィールド。"""
+        from aviutl_whisper.exporter import ExoSettings
+        s = ExoSettings()
+        assert s.max_chars_per_line == 20
+        s2 = ExoSettings.from_dict({"max_chars_per_line": 30})
+        assert s2.max_chars_per_line == 30
+
+    def test_detect_device_large_model(self):
+        """large-v3モデルの場合、GPU時はint8_float16が選択される。"""
+        from aviutl_whisper.models import _detect_device
+        device, compute_type = _detect_device("large-v3")
+        assert device in ("cuda", "cpu")
+        if device == "cuda":
+            assert compute_type == "int8_float16"
+        else:
+            assert compute_type == "int8"
+
+    def test_detect_device_medium_model(self):
+        """mediumモデルの場合、GPU時はfloat16が選択される。"""
+        from aviutl_whisper.models import _detect_device
+        device, compute_type = _detect_device("medium")
+        assert device in ("cuda", "cpu")
+        if device == "cuda":
+            assert compute_type == "float16"
+        else:
+            assert compute_type == "int8"
+
 
 # ============================================================
 # api.py テスト

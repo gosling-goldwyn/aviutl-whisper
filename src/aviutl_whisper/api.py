@@ -188,6 +188,15 @@ class Api:
             progress_callback=self._progress_callback,
         )
 
+        # WhisperモデルをGPUから解放 (speechbrainのためにVRAMを確保)
+        del whisper_model
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
         if self._cancelled:
             return {"success": False, "error": "キャンセルされました"}
 
@@ -320,6 +329,7 @@ class Api:
             "default_edge_color": exporter.DEFAULT_EDGE_COLOR,
             "speaker_images": [],
             "background_image": "",
+            "max_chars_per_line": 20,
         }
 
     def select_image_file(self):

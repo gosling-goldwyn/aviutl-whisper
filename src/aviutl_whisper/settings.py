@@ -30,6 +30,7 @@ DEFAULT_SETTINGS = {
         "speaker_edge_colors": [],
         "speaker_images": [],
         "background_image": "",
+        "max_chars_per_line": 20,
     },
 }
 

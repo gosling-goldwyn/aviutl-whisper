@@ -74,6 +74,8 @@ class ExoSettings:
     speaker_images: list[SpeakerImageSettings] = field(default_factory=lambda: [])
     # 背景画像パス
     background_image: str = ""
+    # 1行の最大文字数 (0で無効)
+    max_chars_per_line: int = 20
 
     def get_speaker_color(self, index: int) -> str:
         """話者インデックスに対応する文字色 (RGB hex) を返す。"""
@@ -122,6 +124,7 @@ class ExoSettings:
             speaker_edge_colors=d.get("speaker_edge_colors", []),
             speaker_images=speaker_images,
             background_image=d.get("background_image", ""),
+            max_chars_per_line=int(d.get("max_chars_per_line", 20)),
         )
 
 
@@ -311,6 +314,19 @@ def _emit_image_objects(
     return idx
 
 
+def _wrap_text(text: str, max_chars: int) -> str:
+    """テキストを指定文字数で改行する。max_chars <= 0 の場合はそのまま返す。"""
+    if max_chars <= 0:
+        return text
+    lines = []
+    for line in text.split("\n"):
+        while len(line) > max_chars:
+            lines.append(line[:max_chars])
+            line = line[max_chars:]
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _encode_exo_text(text: str) -> str:
     """テキストをAviUtl exo形式のhexエンコードに変換する。
 
@@ -431,7 +447,8 @@ def export_exo(
         color = speaker_color[speaker]
         edge_color = speaker_edge[speaker]
 
-        hex_text = _encode_exo_text(seg.text)
+        wrapped_text = _wrap_text(seg.text, settings.max_chars_per_line)
+        hex_text = _encode_exo_text(wrapped_text)
 
         # [N] オブジェクトヘッダー
         lines.append(f"[{obj_idx}]")

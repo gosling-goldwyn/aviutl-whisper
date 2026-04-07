@@ -253,6 +253,7 @@ function collectExoSettings() {
         soft_edge: $("#exo-soft-edge").checked,
         pos_x: parseFloat($("#exo-pos-x").value) || 0,
         pos_y: parseFloat($("#exo-pos-y").value) || 0,
+        max_chars_per_line: parseInt($("#exo-max-chars").value) || 0,
         speaker_colors: speakerColors,
         speaker_edge_colors: speakerEdgeColors,
         speaker_images: tachieData.map(d => ({
@@ -565,6 +566,7 @@ async function loadSavedSettings() {
             if (exo.align != null) $("#exo-align").value = exo.align;
             if (exo.pos_x != null) $("#exo-pos-x").value = exo.pos_x;
             if (exo.pos_y != null) $("#exo-pos-y").value = exo.pos_y;
+            if (exo.max_chars_per_line != null) $("#exo-max-chars").value = exo.max_chars_per_line;
             $("#exo-bold").checked = !!exo.bold;
             $("#exo-italic").checked = !!exo.italic;
             $("#exo-soft-edge").checked = exo.soft_edge !== false;
