@@ -53,6 +53,51 @@ def _get_system_fonts() -> list[str]:
     return sorted(fonts)
 
 
+def _apply_speaker_mapping(
+    segments: list[transcriber.TranscriptionSegment],
+    mapping: dict[str, int] | None,
+) -> list[transcriber.TranscriptionSegment]:
+    """話者マッピングを適用してセグメントの話者ラベルを入れ替える。
+
+    mapping: {"Speaker 1": 0, "Speaker 2": 1} のような辞書。
+    スロット番号は0始まり。スロット番号をもとに "Speaker N" ラベルに変換する。
+    mapping が None またはデフォルト(各話者がそのままのスロット)の場合は元のセグメントを返す。
+    """
+    if not mapping:
+        return segments
+
+    # 元の話者名リスト (ソート済み)
+    original_speakers = sorted(set(s.speaker or "Speaker 1" for s in segments))
+
+    # デフォルトマッピングか確認 (変更なしならスキップ)
+    is_default = all(
+        mapping.get(spk, i) == i for i, spk in enumerate(original_speakers)
+    )
+    if is_default:
+        return segments
+
+    # スロット番号 → 新しい話者名
+    slot_to_name = {i: spk for i, spk in enumerate(original_speakers)}
+    # 元の話者名 → 新しい話者名 (スロットが指す話者名)
+    name_remap = {}
+    for spk in original_speakers:
+        slot = mapping.get(spk)
+        if slot is not None and slot in slot_to_name:
+            name_remap[spk] = slot_to_name[slot]
+        else:
+            name_remap[spk] = spk
+
+    return [
+        transcriber.TranscriptionSegment(
+            start=seg.start,
+            end=seg.end,
+            text=seg.text,
+            speaker=name_remap.get(seg.speaker or "Speaker 1", seg.speaker),
+        )
+        for seg in segments
+    ]
+
+
 class Api:
     """pywebview JS APIクラス。
 
@@ -65,6 +110,9 @@ class Api:
         self._cancelled = False
         self._last_result: transcriber.TranscriptionResult | None = None
         self._last_segments: list[transcriber.TranscriptionSegment] | None = None
+        self._last_wav_path: str | None = None
+        self._last_output_format: str = "text"
+        self._speaker_mapping: dict[str, int] | None = None
         self._exo_settings: exporter.ExoSettings | None = None
         self._system_fonts: list[str] | None = None
 
@@ -92,23 +140,27 @@ class Api:
             }
         return None
 
-    def transcribe(self, file_path: str, settings: dict):
+    def transcribe(self, file_path: str, settings_dict: dict):
         """文字起こし＋話者分離を実行する。"""
         self._cancelled = False
+        self._speaker_mapping = None
+        # 前回のWAVファイルを削除
+        self._cleanup_wav()
         # exo設定を保存
-        if settings.get("exo_settings"):
-            self._exo_settings = exporter.ExoSettings.from_dict(settings["exo_settings"])
+        if settings_dict.get("exo_settings"):
+            self._exo_settings = exporter.ExoSettings.from_dict(settings_dict["exo_settings"])
         try:
-            return self._run_transcription(file_path, settings)
+            return self._run_transcription(file_path, settings_dict)
         except Exception as e:
             logger.exception("文字起こしエラー")
             return {"success": False, "error": str(e)}
 
-    def _run_transcription(self, file_path: str, settings: dict):
-        model_size = settings.get("model_size", "medium")
-        language = settings.get("language")
-        num_speakers = settings.get("num_speakers")
-        output_format = settings.get("output_format", "text")
+    def _run_transcription(self, file_path: str, settings_dict: dict):
+        model_size = settings_dict.get("model_size", "medium")
+        language = settings_dict.get("language")
+        num_speakers = settings_dict.get("num_speakers")
+        output_format = settings_dict.get("output_format", "text")
+        self._last_output_format = output_format
 
         # 1. 音声変換
         self._update_progress(0.05, "音声ファイルを変換中...")
@@ -168,25 +220,23 @@ class Api:
 
         self._last_result = result
         self._last_segments = segments
+        self._last_wav_path = wav_path  # 話者サンプル再生用に保持
 
-        # 一時ファイル削除
-        try:
-            os.unlink(wav_path)
-        except OSError:
-            pass
-
-        speakers = set(s.speaker for s in segments if s.speaker)
+        # 話者情報を構築
+        speaker_info = self._build_speaker_info(segments)
         self._update_progress(1.0, "完了！")
 
         return {
             "success": True,
             "text": text,
             "num_segments": len(segments),
-            "num_speakers": len(speakers),
+            "num_speakers": len(speaker_info),
             "language": result.language,
+            "speakers": speaker_info,
         }
 
-    def save_result(self, format_type: str, exo_settings: dict | None = None):
+    def save_result(self, format_type: str, exo_settings: dict | None = None,
+                    speaker_mapping: dict | None = None):
         """結果をファイルに保存する。"""
         if not self._last_segments:
             return {"success": False, "error": "保存する結果がありません"}
@@ -194,6 +244,9 @@ class Api:
         # exo設定を更新（保存時に最新の設定を反映）
         if exo_settings:
             self._exo_settings = exporter.ExoSettings.from_dict(exo_settings)
+
+        # マッピング適用
+        segments = _apply_speaker_mapping(self._last_segments, speaker_mapping)
 
         label, ext, _ = exporter.EXPORTERS.get(format_type, ("テキスト", ".txt", None))
         file_types = (f"{label}ファイル (*{ext})",)
@@ -206,7 +259,7 @@ class Api:
         if result:
             path = result if isinstance(result, str) else result[0]
             saved_path = exporter.export_to_file(
-                self._last_segments, path, format_type,
+                segments, path, format_type,
                 exo_settings=self._exo_settings if format_type == "exo" else None,
             )
             return {"success": True, "path": saved_path}
@@ -281,6 +334,91 @@ class Api:
         if result and len(result) > 0:
             return result[0]
         return None
+
+    def remap_speakers(self, mapping: dict, format_type: str | None = None,
+                       exo_settings: dict | None = None):
+        """話者マッピングを変更して出力を再生成する。
+
+        Args:
+            mapping: {"Speaker 1": 0, "Speaker 2": 1} — 設定スロット番号
+            format_type: 出力形式 (省略時は前回と同じ)
+            exo_settings: exo設定 (省略時は前回と同じ)
+        """
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+
+        self._speaker_mapping = mapping
+        fmt = format_type or self._last_output_format
+        if exo_settings:
+            self._exo_settings = exporter.ExoSettings.from_dict(exo_settings)
+
+        segments = _apply_speaker_mapping(self._last_segments, mapping)
+        _, _, export_fn = exporter.EXPORTERS[fmt]
+        if fmt == "exo":
+            text = exporter.export_exo(segments, settings=self._exo_settings)
+        else:
+            text = export_fn(segments)
+
+        return {"success": True, "text": text}
+
+    def play_speaker_sample(self, speaker_name: str):
+        """話者の最初の発声区間を再生する。"""
+        if not self._last_segments or not self._last_wav_path:
+            return {"success": False, "error": "再生データがありません"}
+
+        if not os.path.exists(self._last_wav_path):
+            return {"success": False, "error": "音声ファイルが見つかりません"}
+
+        # 該当話者の最初のセグメントを取得
+        seg = next(
+            (s for s in self._last_segments if s.speaker == speaker_name),
+            None,
+        )
+        if seg is None:
+            return {"success": False, "error": f"話者 {speaker_name} が見つかりません"}
+
+        try:
+            import sounddevice as sd
+            import soundfile as sf
+
+            data, sr = sf.read(self._last_wav_path)
+            start_sample = int(seg.start * sr)
+            end_sample = min(int(seg.end * sr), len(data))
+            segment_data = data[start_sample:end_sample]
+            # 非同期再生（前の再生を停止してから）
+            sd.stop()
+            sd.play(segment_data, sr)
+            return {"success": True}
+        except Exception as e:
+            logger.exception("音声再生エラー")
+            return {"success": False, "error": str(e)}
+
+    def _build_speaker_info(
+        self, segments: list[transcriber.TranscriptionSegment],
+    ) -> list[dict]:
+        """検出された話者の情報リストを構築する。"""
+        speakers_seen: dict[str, dict] = {}
+        for seg in segments:
+            name = seg.speaker or "Speaker 1"
+            if name not in speakers_seen:
+                speakers_seen[name] = {
+                    "name": name,
+                    "sample_text": seg.text[:80],
+                    "segment_count": 0,
+                    "first_start": seg.start,
+                    "first_end": seg.end,
+                }
+            speakers_seen[name]["segment_count"] += 1
+        return sorted(speakers_seen.values(), key=lambda x: x["name"])
+
+    def _cleanup_wav(self):
+        """保持しているWAVファイルを削除する。"""
+        if self._last_wav_path:
+            try:
+                os.unlink(self._last_wav_path)
+            except OSError:
+                pass
+            self._last_wav_path = None
 
     def load_settings(self):
         """保存された設定を読み込む。"""

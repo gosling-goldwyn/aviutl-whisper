@@ -7,6 +7,8 @@ const hide = (el) => el.classList.add("hidden");
 let selectedFile = null;
 let isProcessing = false;
 let exoDefaults = null;
+let lastSpeakers = [];
+let currentMapping = {};
 
 const DEFAULT_SPEAKER_COLORS = [
     "ffffff", "00ffff", "00ff00", "ff00ff",
@@ -355,13 +357,23 @@ function showResult(result) {
     $("#result-text").value = result.text;
     show($("#result-section"));
     setProgress(100, "完了！");
+
+    // 話者マッピングUI
+    lastSpeakers = result.speakers || [];
+    if (lastSpeakers.length > 1) {
+        renderSpeakerMapping(lastSpeakers);
+        show($("#speaker-mapping-area"));
+    } else {
+        hide($("#speaker-mapping-area"));
+    }
 }
 
 async function saveResult() {
     try {
         const format = $("#output-format").value;
         const exoSettings = format === "exo" ? collectExoSettings() : null;
-        const result = await pywebview.api.save_result(format, exoSettings);
+        const mapping = Object.keys(currentMapping).length > 0 ? currentMapping : null;
+        const result = await pywebview.api.save_result(format, exoSettings, mapping);
         if (result && result.success) {
             alert("保存しました: " + result.path);
         }
@@ -382,6 +394,101 @@ async function copyResult() {
         // フォールバック
         $("#result-text").select();
         document.execCommand("copy");
+    }
+}
+
+// --- 話者マッピング ---
+function renderSpeakerMapping(speakers) {
+    const container = $("#speaker-mapping-list");
+    const colors = exoDefaults?.speaker_colors || DEFAULT_SPEAKER_COLORS;
+    currentMapping = {};
+    speakers.forEach((spk, i) => { currentMapping[spk.name] = i; });
+
+    container.innerHTML = "";
+    speakers.forEach((spk, i) => {
+        const color = colors[i % colors.length];
+        const row = document.createElement("div");
+        row.className = "speaker-mapping-row";
+        row.innerHTML = `
+            <button class="btn-play-sample" data-speaker="${spk.name}" title="サンプル再生">▶</button>
+            <span class="color-preview-dot" style="background:#${color}" data-index="${i}"></span>
+            <span class="mapping-label">${spk.name}</span>
+            <span class="sample-text" title="${spk.sample_text}">${spk.sample_text}</span>
+            <select class="mapping-select" data-speaker="${spk.name}">
+                ${speakers.map((_, j) => `<option value="${j}" ${j === i ? "selected" : ""}>設定 ${j + 1}</option>`).join("")}
+            </select>
+        `;
+        container.appendChild(row);
+    });
+
+    // 再生ボタンのイベント
+    container.querySelectorAll(".btn-play-sample").forEach(btn => {
+        btn.addEventListener("click", () => playSpeakerSample(btn.dataset.speaker));
+    });
+
+    // セレクトボックスのイベント
+    container.querySelectorAll(".mapping-select").forEach(sel => {
+        sel.addEventListener("change", () => applyMapping());
+    });
+
+    // 2話者の場合は入れ替えボタンを表示
+    const swapBtn = $("#btn-swap-speakers");
+    if (speakers.length === 2) {
+        show(swapBtn);
+        swapBtn.onclick = swapSpeakers;
+    } else {
+        hide(swapBtn);
+    }
+}
+
+async function playSpeakerSample(speakerName) {
+    try {
+        const btn = document.querySelector(`.btn-play-sample[data-speaker="${speakerName}"]`);
+        if (btn) { btn.textContent = "⏳"; btn.disabled = true; }
+        await pywebview.api.play_speaker_sample(speakerName);
+        if (btn) { btn.textContent = "▶"; btn.disabled = false; }
+    } catch (e) {
+        console.error("再生エラー:", e);
+        const btn = document.querySelector(`.btn-play-sample[data-speaker="${speakerName}"]`);
+        if (btn) { btn.textContent = "▶"; btn.disabled = false; }
+    }
+}
+
+function swapSpeakers() {
+    const selects = document.querySelectorAll(".mapping-select");
+    if (selects.length === 2) {
+        const tmp = selects[0].value;
+        selects[0].value = selects[1].value;
+        selects[1].value = tmp;
+        applyMapping();
+    }
+}
+
+async function applyMapping() {
+    const selects = document.querySelectorAll(".mapping-select");
+    currentMapping = {};
+    selects.forEach(sel => {
+        currentMapping[sel.dataset.speaker] = parseInt(sel.value);
+    });
+
+    // 色プレビュードットを更新
+    const colors = exoDefaults?.speaker_colors || DEFAULT_SPEAKER_COLORS;
+    selects.forEach(sel => {
+        const slot = parseInt(sel.value);
+        const row = sel.closest(".speaker-mapping-row");
+        const dot = row.querySelector(".color-preview-dot");
+        if (dot) dot.style.background = "#" + colors[slot % colors.length];
+    });
+
+    try {
+        const format = $("#output-format").value;
+        const exoSettings = format === "exo" ? collectExoSettings() : null;
+        const result = await pywebview.api.remap_speakers(currentMapping, format, exoSettings);
+        if (result && result.success) {
+            $("#result-text").value = result.text;
+        }
+    } catch (e) {
+        console.error("マッピング変更エラー:", e);
     }
 }
 

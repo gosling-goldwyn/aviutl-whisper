@@ -612,6 +612,92 @@ class TestApi:
 
 
 # ============================================================
+# speaker mapping テスト
+# ============================================================
+
+class TestSpeakerMapping:
+    """話者マッピング機能のテスト。"""
+
+    @pytest.fixture
+    def two_speaker_segments(self):
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        return [
+            TranscriptionSegment(start=0.0, end=1.0, text="おはよう", speaker="Speaker 1"),
+            TranscriptionSegment(start=1.0, end=2.0, text="こんにちは", speaker="Speaker 2"),
+            TranscriptionSegment(start=2.0, end=3.0, text="元気？", speaker="Speaker 1"),
+            TranscriptionSegment(start=3.0, end=4.0, text="うん", speaker="Speaker 2"),
+        ]
+
+    def test_apply_mapping_none(self, two_speaker_segments):
+        """mapping=Noneの場合はセグメントがそのまま返る。"""
+        from aviutl_whisper.api import _apply_speaker_mapping
+        result = _apply_speaker_mapping(two_speaker_segments, None)
+        assert result is two_speaker_segments
+
+    def test_apply_mapping_default(self, two_speaker_segments):
+        """デフォルトマッピング(変更なし)の場合はそのまま返る。"""
+        from aviutl_whisper.api import _apply_speaker_mapping
+        mapping = {"Speaker 1": 0, "Speaker 2": 1}
+        result = _apply_speaker_mapping(two_speaker_segments, mapping)
+        assert result is two_speaker_segments
+
+    def test_apply_mapping_swap(self, two_speaker_segments):
+        """話者を入れ替えるマッピングが正しく動作する。"""
+        from aviutl_whisper.api import _apply_speaker_mapping
+        mapping = {"Speaker 1": 1, "Speaker 2": 0}
+        result = _apply_speaker_mapping(two_speaker_segments, mapping)
+        # Speaker 1 のセグメント(index 0,2) が Speaker 2 に、逆も同様
+        assert result[0].speaker == "Speaker 2"
+        assert result[0].text == "おはよう"
+        assert result[1].speaker == "Speaker 1"
+        assert result[1].text == "こんにちは"
+        assert result[2].speaker == "Speaker 2"
+        assert result[3].speaker == "Speaker 1"
+
+    def test_apply_mapping_swap_exo_colors(self, two_speaker_segments):
+        """マッピング入れ替え後のexo出力で色が正しく割り当てられる。"""
+        from aviutl_whisper.api import _apply_speaker_mapping
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        mapping = {"Speaker 1": 1, "Speaker 2": 0}
+        swapped = _apply_speaker_mapping(two_speaker_segments, mapping)
+        settings = ExoSettings(speaker_colors=["ff0000", "00ff00"])
+        text = export_exo(swapped, settings=settings)
+        # "おはよう" は元Speaker1だがswap後はSpeaker2 → layer 2, color 00ff00
+        # "こんにちは" は元Speaker2だがswap後はSpeaker1 → layer 1, color ff0000
+        assert "color=ff0000" in text
+        assert "color=00ff00" in text
+
+    def test_build_speaker_info(self):
+        """_build_speaker_infoが話者情報を正しく返す。"""
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        api = Api()
+        segs = [
+            TranscriptionSegment(start=0.0, end=1.0, text="hello world", speaker="Speaker 1"),
+            TranscriptionSegment(start=1.0, end=2.0, text="hi there", speaker="Speaker 2"),
+            TranscriptionSegment(start=2.0, end=3.0, text="ok", speaker="Speaker 1"),
+        ]
+        info = api._build_speaker_info(segs)
+        assert len(info) == 2
+        assert info[0]["name"] == "Speaker 1"
+        assert info[0]["segment_count"] == 2
+        assert info[0]["sample_text"] == "hello world"
+        assert info[0]["first_start"] == 0.0
+        assert info[1]["name"] == "Speaker 2"
+        assert info[1]["segment_count"] == 1
+
+    def test_apply_mapping_preserves_text(self, two_speaker_segments):
+        """マッピング適用後もテキストとタイムスタンプが保持される。"""
+        from aviutl_whisper.api import _apply_speaker_mapping
+        mapping = {"Speaker 1": 1, "Speaker 2": 0}
+        result = _apply_speaker_mapping(two_speaker_segments, mapping)
+        for orig, mapped in zip(two_speaker_segments, result):
+            assert orig.start == mapped.start
+            assert orig.end == mapped.end
+            assert orig.text == mapped.text
+
+
+# ============================================================
 # settings.py テスト
 # ============================================================
 
