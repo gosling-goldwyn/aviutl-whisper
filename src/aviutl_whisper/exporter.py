@@ -468,7 +468,7 @@ def export_exo(
         lines.append("自動スクロール=0")
         lines.append(f"B={1 if settings.bold else 0}")
         lines.append(f"I={1 if settings.italic else 0}")
-        lines.append("type=0")
+        lines.append(f"type={3 if settings.soft_edge else 0}")
         lines.append("autoadjust=0")
         lines.append(f"soft={1 if settings.soft_edge else 0}")
         lines.append("monospace=0")

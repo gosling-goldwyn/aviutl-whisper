@@ -251,6 +251,32 @@ class TestDiarizer:
         _fill_missing_speakers(segments)
         assert segments[1].speaker == "Speaker 1"  # 前方伝播
 
+    def test_split_into_windows(self):
+        """_split_into_windowsが正しくサブウィンドウに分割する。"""
+        from aviutl_whisper.diarizer import _split_into_windows
+        windows = _split_into_windows(0.0, 10.0, 2.5)
+        assert len(windows) == 4
+        assert windows[0] == (0.0, 2.5)
+        assert windows[1] == (2.5, 5.0)
+        assert windows[2] == (5.0, 7.5)
+        assert windows[3] == (7.5, 10.0)
+
+    def test_split_into_windows_short(self):
+        """短いセグメントは分割されない。"""
+        from aviutl_whisper.diarizer import _split_into_windows
+        windows = _split_into_windows(0.0, 2.0, 2.5)
+        assert len(windows) == 1
+        assert windows[0] == (0.0, 2.0)
+
+    def test_split_into_windows_remainder(self):
+        """端数のウィンドウがMIN_SEGMENT_DURATION未満なら除外される。"""
+        from aviutl_whisper.diarizer import _split_into_windows, MIN_SEGMENT_DURATION
+        # 5.3秒を2.5秒ウィンドウで分割: [0-2.5], [2.5-5.0], [5.0-5.3]
+        # 残り0.3秒 < MIN_SEGMENT_DURATION(0.5) → 除外
+        windows = _split_into_windows(0.0, 5.3, 2.5)
+        assert len(windows) == 2
+        assert windows[-1] == (2.5, 5.0)
+
 
 # ============================================================
 # exporter.py テスト
@@ -738,6 +764,22 @@ class TestExporter:
             assert compute_type == "float16"
         else:
             assert compute_type == "int8"
+
+    def test_exo_edge_type(self, sample_segments):
+        """soft_edge=Trueの場合、type=3(縁取り)が出力される。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(soft_edge=True)
+        text = export_exo(sample_segments, settings=settings)
+        assert "type=3" in text
+        assert "soft=1" in text
+
+    def test_exo_no_edge_type(self, sample_segments):
+        """soft_edge=Falseの場合、type=0(標準)が出力される。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(soft_edge=False)
+        text = export_exo(sample_segments, settings=settings)
+        assert "type=0" in text
+        assert "soft=0" in text
 
 
 # ============================================================
