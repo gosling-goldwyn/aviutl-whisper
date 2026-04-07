@@ -13,26 +13,32 @@ logger = logging.getLogger(__name__)
 
 
 def _get_system_fonts() -> list[str]:
-    """Windowsのシステムフォント名一覧を取得する。"""
+    """Windowsのシステムフォント名一覧を取得する。
+    
+    HKEY_LOCAL_MACHINE (全ユーザー共通) と
+    HKEY_CURRENT_USER (ユーザー個別インストール) の両方を参照する。
+    """
     fonts = set()
+    font_key_path = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
     try:
         import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts",
-        )
-        i = 0
-        while True:
+        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
             try:
-                name, _, _ = winreg.EnumValue(key, i)
-                # "MS Gothic (TrueType)" → "MS Gothic"
-                font_name = name.split(" (")[0].strip()
-                if font_name:
-                    fonts.add(font_name)
-                i += 1
+                key = winreg.OpenKey(hive, font_key_path)
+                i = 0
+                while True:
+                    try:
+                        name, _, _ = winreg.EnumValue(key, i)
+                        # "MS Gothic (TrueType)" → "MS Gothic"
+                        font_name = name.split(" (")[0].strip()
+                        if font_name:
+                            fonts.add(font_name)
+                        i += 1
+                    except OSError:
+                        break
+                winreg.CloseKey(key)
             except OSError:
-                break
-        winreg.CloseKey(key)
+                pass
     except Exception:
         pass
 
