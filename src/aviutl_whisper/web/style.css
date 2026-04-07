@@ -355,3 +355,91 @@ input[type="color"] {
     outline: none;
     border-color: var(--accent);
 }
+
+/* 立ち絵設定パネル */
+.tachie-description {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+.speaker-tachie-row {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    background: var(--bg);
+    border-radius: var(--radius);
+}
+
+.speaker-tachie-row .tachie-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.speaker-tachie-row .tachie-header .speaker-label {
+    min-width: 60px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.speaker-tachie-row .tachie-file-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+
+.speaker-tachie-row .tachie-file-name {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.speaker-tachie-row .btn-tachie-select {
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.speaker-tachie-row .btn-tachie-clear {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.speaker-tachie-row .btn-tachie-clear:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.tachie-params {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+}
+
+.tachie-params .tachie-param {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.tachie-params .tachie-param label {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.tachie-params .tachie-param input {
+    padding: 4px 8px;
+    font-size: 0.82rem;
+}

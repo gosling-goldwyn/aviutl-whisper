@@ -394,6 +394,122 @@ class TestExporter:
         s = ExoSettings.from_dict(None)
         assert s.font_size == 34
 
+    def test_exo_settings_with_speaker_images(self):
+        """ExoSettings.from_dict()がspeaker_imagesを正しくパースする。"""
+        from aviutl_whisper.exporter import ExoSettings, SpeakerImageSettings
+        d = {
+            "speaker_images": [
+                {"file": "C:\\img\\speaker1.png", "x": 100.0, "y": -50.0, "scale": 80.0},
+                {"file": "C:\\img\\speaker2.png", "x": -100.0, "y": -50.0, "scale": 120.0},
+            ],
+        }
+        s = ExoSettings.from_dict(d)
+        assert len(s.speaker_images) == 2
+        assert s.speaker_images[0].file == "C:\\img\\speaker1.png"
+        assert s.speaker_images[0].x == 100.0
+        assert s.speaker_images[0].y == -50.0
+        assert s.speaker_images[0].scale == 80.0
+        assert s.speaker_images[1].file == "C:\\img\\speaker2.png"
+
+    def test_exo_get_speaker_image(self):
+        """get_speaker_image()が正しい設定を返す。"""
+        from aviutl_whisper.exporter import ExoSettings, SpeakerImageSettings
+        s = ExoSettings(speaker_images=[
+            SpeakerImageSettings(file="a.png", x=10, y=20, scale=50),
+            SpeakerImageSettings(file="", x=0, y=0, scale=100),
+        ])
+        img0 = s.get_speaker_image(0)
+        assert img0 is not None
+        assert img0.file == "a.png"
+        # file が空の場合はNone
+        assert s.get_speaker_image(1) is None
+        # 範囲外もNone
+        assert s.get_speaker_image(5) is None
+
+    def test_build_speaker_intervals_basic(self, sample_segments):
+        """_build_speaker_intervals が話中/非話中を正しく分割する。"""
+        from aviutl_whisper.exporter import _build_speaker_intervals
+        fps = 30.0
+        total_frames = int(5.0 * fps) + 1  # 5秒分
+        intervals = _build_speaker_intervals(sample_segments, "Speaker 1", fps, total_frames)
+        # 少なくとも1つの話中区間がある
+        talking = [iv for iv in intervals if iv[2] is True]
+        assert len(talking) >= 1
+        # 全区間がタイムライン全体をカバーする
+        assert intervals[0][0] == 1
+        assert intervals[-1][1] == total_frames
+
+    def test_build_speaker_intervals_no_segments(self):
+        """話者のセグメントが無い場合は全体が非話中。"""
+        from aviutl_whisper.exporter import _build_speaker_intervals
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        segs = [TranscriptionSegment(start=1.0, end=2.0, text="hello", speaker="Speaker 1")]
+        intervals = _build_speaker_intervals(segs, "Speaker 2", 30.0, 100)
+        assert len(intervals) == 1
+        assert intervals[0] == (1, 100, False)
+
+    def test_build_speaker_intervals_coverage(self):
+        """区間がタイムライン全体をカバーし、隙間がない。"""
+        from aviutl_whisper.exporter import _build_speaker_intervals
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        segs = [
+            TranscriptionSegment(start=1.0, end=2.0, text="a", speaker="S1"),
+            TranscriptionSegment(start=3.0, end=4.0, text="b", speaker="S1"),
+        ]
+        intervals = _build_speaker_intervals(segs, "S1", 30.0, 150)
+        # 隙間なくカバーしているか
+        for i in range(len(intervals) - 1):
+            assert intervals[i][1] + 1 == intervals[i + 1][0]
+        assert intervals[0][0] == 1
+        assert intervals[-1][1] == 150
+
+    def test_emit_image_objects(self):
+        """_emit_image_objects が正しいexo行を出力する。"""
+        from aviutl_whisper.exporter import _emit_image_objects, SpeakerImageSettings
+        img = SpeakerImageSettings(file="C:\\img\\test.png", x=100.0, y=-50.0, scale=80.0)
+        intervals = [(1, 30, True), (31, 60, False)]
+        lines = []
+        next_idx = _emit_image_objects(lines, intervals, img, layer=101, obj_idx_start=5)
+        assert next_idx == 7
+        content = "\n".join(lines)
+        assert "[5]" in content
+        assert "[6]" in content
+        assert "layer=101" in content
+        assert "_name=画像ファイル" in content
+        assert "file=C:\\img\\test.png" in content
+        assert "_name=標準描画" in content
+        assert "X=100.0" in content
+        assert "Y=-50.0" in content
+        assert "拡大率=80.00" in content
+        assert "_name=色調補正" in content
+        assert "彩度=100.0" in content  # 話中
+        assert "彩度=0.0" in content    # 非話中
+
+    def test_exo_with_tachie(self, sample_segments):
+        """立ち絵付きexo出力が画像オブジェクトを含む。"""
+        from aviutl_whisper.exporter import ExoSettings, SpeakerImageSettings, export_exo
+        settings = ExoSettings(
+            speaker_images=[
+                SpeakerImageSettings(file="C:\\img\\s1.png", x=200, y=-100, scale=80),
+                SpeakerImageSettings(file="C:\\img\\s2.png", x=-200, y=-100, scale=80),
+            ],
+        )
+        text = export_exo(sample_segments, settings=settings)
+        assert "画像ファイル" in text
+        assert "file=C:\\img\\s1.png" in text
+        assert "file=C:\\img\\s2.png" in text
+        assert "色調補正" in text
+        assert "layer=101" in text
+        assert "layer=102" in text
+
+    def test_exo_without_tachie(self, sample_segments):
+        """立ち絵なしのexo出力に画像オブジェクトが含まれない。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(speaker_images=[])
+        text = export_exo(sample_segments, settings=settings)
+        assert "画像ファイル" not in text
+        assert "色調補正" not in text
+
     def test_exo_rgb_to_bgr(self):
         """exoは色をRGBそのまま使用する (BGR変換なし)。"""
         from aviutl_whisper.exporter import ExoSettings

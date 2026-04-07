@@ -265,7 +265,22 @@ class Api:
             "pos_y": defaults.pos_y,
             "speaker_colors": list(exporter.DEFAULT_SPEAKER_COLORS),
             "default_edge_color": exporter.DEFAULT_EDGE_COLOR,
+            "speaker_images": [],
         }
+
+    def select_image_file(self):
+        """画像ファイル選択ダイアログを開く。"""
+        file_types = (
+            "画像ファイル (*.png;*.jpg;*.jpeg;*.bmp;*.gif)",
+            "すべてのファイル (*.*)",
+        )
+        result = self.window.create_file_dialog(
+            webview.FileDialog.OPEN,
+            file_types=file_types,
+        )
+        if result and len(result) > 0:
+            return result[0]
+        return None
 
     def load_settings(self):
         """保存された設定を読み込む。"""

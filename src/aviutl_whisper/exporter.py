@@ -30,6 +30,26 @@ DEFAULT_EDGE_COLOR = "000000"
 
 
 @dataclass
+class SpeakerImageSettings:
+    """話者ごとの立ち絵画像設定。"""
+    file: str = ""
+    x: float = 0.0
+    y: float = 0.0
+    scale: float = 100.0
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SpeakerImageSettings":
+        if not d:
+            return cls()
+        return cls(
+            file=d.get("file", ""),
+            x=float(d.get("x", 0.0)),
+            y=float(d.get("y", 0.0)),
+            scale=float(d.get("scale", 100.0)),
+        )
+
+
+@dataclass
 class ExoSettings:
     """AviUtl exo出力の詳細設定。"""
     fps: float = 30.0
@@ -46,10 +66,12 @@ class ExoSettings:
     soft_edge: bool = True
     pos_x: float = 0.0
     pos_y: float = 0.0
-    # 話者ごとの文字色 (hex, BGRではなくRGB入力 → exo出力時にBGR変換)
+    # 話者ごとの文字色 (hex RGB)
     speaker_colors: list[str] = field(default_factory=lambda: list(DEFAULT_SPEAKER_COLORS))
     # 話者ごとの縁色
     speaker_edge_colors: list[str] = field(default_factory=lambda: [])
+    # 話者ごとの立ち絵画像設定
+    speaker_images: list[SpeakerImageSettings] = field(default_factory=lambda: [])
 
     def get_speaker_color(self, index: int) -> str:
         """話者インデックスに対応する文字色 (RGB hex) を返す。"""
@@ -62,11 +84,23 @@ class ExoSettings:
             return self.speaker_edge_colors[index % len(self.speaker_edge_colors)]
         return DEFAULT_EDGE_COLOR
 
+    def get_speaker_image(self, index: int) -> SpeakerImageSettings | None:
+        """話者インデックスに対応する立ち絵設定を返す。無い場合はNone。"""
+        if index < len(self.speaker_images):
+            img = self.speaker_images[index]
+            if img.file:
+                return img
+        return None
+
     @classmethod
     def from_dict(cls, d: dict) -> "ExoSettings":
         """フロントエンドから渡された辞書からExoSettingsを生成する。"""
         if not d:
             return cls()
+        speaker_images = [
+            SpeakerImageSettings.from_dict(img)
+            for img in d.get("speaker_images", [])
+        ]
         return cls(
             fps=float(d.get("fps", 30.0)),
             width=int(d.get("width", 1920)),
@@ -84,6 +118,7 @@ class ExoSettings:
             pos_y=float(d.get("pos_y", 0.0)),
             speaker_colors=d.get("speaker_colors", list(DEFAULT_SPEAKER_COLORS)),
             speaker_edge_colors=d.get("speaker_edge_colors", []),
+            speaker_images=speaker_images,
         )
 
 
@@ -163,6 +198,114 @@ def export_text(segments: list[TranscriptionSegment]) -> str:
         speaker = seg.speaker or "Unknown"
         lines.append(f"[{start} - {end}] {speaker}: {seg.text}")
     return "\n".join(lines)
+
+
+def _build_speaker_intervals(
+    segments: list[TranscriptionSegment],
+    speaker: str,
+    fps: float,
+    total_frames: int,
+) -> list[tuple[int, int, bool]]:
+    """話者の話中/非話中の区間リストを生成する。
+
+    Returns:
+        (start_frame, end_frame, is_talking) のリスト。
+        隣接する同種の区間はマージされている。
+    """
+    # 該当話者のセグメントを時系列順に取得
+    speaker_segs = sorted(
+        [s for s in segments if (s.speaker or "Speaker 1") == speaker],
+        key=lambda s: s.start,
+    )
+
+    if not speaker_segs:
+        # 話者のセグメントが無い場合は全体が非話中
+        return [(1, total_frames, False)]
+
+    # 話中フレーム区間を構築
+    talking_frames: list[tuple[int, int]] = []
+    for seg in speaker_segs:
+        start = max(1, int(seg.start * fps))
+        end = int(seg.end * fps)
+        if end <= start:
+            end = start + 1
+        talking_frames.append((start, end))
+
+    # 重複するフレーム区間をマージ
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(talking_frames):
+        if merged and start <= merged[-1][1] + 1:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    # 話中/非話中の区間に分割
+    intervals: list[tuple[int, int, bool]] = []
+    pos = 1
+    for talk_start, talk_end in merged:
+        if pos < talk_start:
+            intervals.append((pos, talk_start - 1, False))
+        intervals.append((talk_start, talk_end, True))
+        pos = talk_end + 1
+    if pos <= total_frames:
+        intervals.append((pos, total_frames, False))
+
+    return intervals
+
+
+def _emit_image_objects(
+    lines: list[str],
+    intervals: list[tuple[int, int, bool]],
+    image_settings: SpeakerImageSettings,
+    layer: int,
+    obj_idx_start: int,
+) -> int:
+    """画像オブジェクト群をexo行リストに追加する。
+
+    Returns:
+        次のオブジェクトインデックス。
+    """
+    idx = obj_idx_start
+    for start_frame, end_frame, is_talking in intervals:
+        saturation = 100.0 if is_talking else 0.0
+
+        # [N] オブジェクトヘッダー
+        lines.append(f"[{idx}]")
+        lines.append(f"start={start_frame}")
+        lines.append(f"end={end_frame}")
+        lines.append(f"layer={layer}")
+        lines.append("overlay=1")
+        lines.append("camera=0")
+
+        # [N.0] 画像ファイル
+        lines.append(f"[{idx}.0]")
+        lines.append("_name=画像ファイル")
+        lines.append(f"file={image_settings.file}")
+
+        # [N.1] 標準描画
+        lines.append(f"[{idx}.1]")
+        lines.append("_name=標準描画")
+        lines.append(f"X={image_settings.x:.1f}")
+        lines.append(f"Y={image_settings.y:.1f}")
+        lines.append("Z=0.0")
+        lines.append(f"拡大率={image_settings.scale:.2f}")
+        lines.append("透明度=0.0")
+        lines.append("回転=0.00")
+        lines.append("blend=0")
+
+        # [N.2] 色調補正
+        lines.append(f"[{idx}.2]")
+        lines.append("_name=色調補正")
+        lines.append("明るさ=100.0")
+        lines.append("コントラスト=100.0")
+        lines.append("色相=0.0")
+        lines.append("輝度=100.0")
+        lines.append(f"彩度={saturation:.1f}")
+        lines.append("飽和する=0")
+
+        idx += 1
+
+    return idx
 
 
 def _encode_exo_text(text: str) -> str:
@@ -273,6 +416,16 @@ def export_exo(
         lines.append("透明度=0.0")
         lines.append("回転=0.00")
         lines.append("blend=0")
+
+    # 立ち絵画像オブジェクトの出力
+    next_idx = len(segments)
+    for i, spk in enumerate(speakers):
+        img_settings = settings.get_speaker_image(i)
+        if img_settings is None:
+            continue
+        image_layer = 101 + i
+        intervals = _build_speaker_intervals(segments, spk, settings.fps, total_frames)
+        next_idx = _emit_image_objects(lines, intervals, img_settings, image_layer, next_idx)
 
     return "\r\n".join(lines) + "\r\n"
 

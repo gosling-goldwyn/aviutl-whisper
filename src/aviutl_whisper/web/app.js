@@ -17,9 +17,13 @@ const DEFAULT_SPEAKER_COLORS = [
 document.addEventListener("DOMContentLoaded", () => {
     initEventListeners();
     $("#output-format").addEventListener("change", updateExoSettingsVisibility);
-    $("#num-speakers").addEventListener("change", renderSpeakerColors);
+    $("#num-speakers").addEventListener("change", () => {
+        renderSpeakerColors();
+        renderSpeakerTachie();
+    });
     updateExoSettingsVisibility();
     renderSpeakerColors();
+    renderSpeakerTachie();
 });
 
 // pywebview API が準備完了してからAPI呼び出し
@@ -132,6 +136,95 @@ function renderSpeakerColors() {
     });
 }
 
+// --- 話者ごとの立ち絵設定UI生成 ---
+let tachieData = [];
+
+function renderSpeakerTachie() {
+    const container = $("#speaker-tachie-list");
+    const numValue = $("#num-speakers").value;
+    const numSpeakers = numValue === "auto" ? 2 : parseInt(numValue);
+
+    // 既存データを維持しつつ、話者数に合わせてリサイズ
+    while (tachieData.length < numSpeakers) {
+        tachieData.push({ file: "", x: 0, y: 0, scale: 100 });
+    }
+
+    container.innerHTML = "";
+    for (let i = 0; i < numSpeakers; i++) {
+        const data = tachieData[i];
+        const fileName = data.file ? data.file.split(/[\\/]/).pop() : "未選択";
+        const row = document.createElement("div");
+        row.className = "speaker-tachie-row";
+        row.dataset.index = i;
+        row.innerHTML = `
+            <div class="tachie-header">
+                <span class="speaker-label">話者 ${i + 1}</span>
+                <div class="tachie-file-group">
+                    <button class="btn btn-tachie-select" data-index="${i}">画像選択</button>
+                    <span class="tachie-file-name" data-index="${i}">${fileName}</span>
+                    <button class="btn-tachie-clear" data-index="${i}" title="クリア">✕</button>
+                </div>
+            </div>
+            <div class="tachie-params">
+                <div class="tachie-param">
+                    <label>X位置</label>
+                    <input type="number" class="tachie-x" data-index="${i}" value="${data.x}" step="0.1">
+                </div>
+                <div class="tachie-param">
+                    <label>Y位置</label>
+                    <input type="number" class="tachie-y" data-index="${i}" value="${data.y}" step="0.1">
+                </div>
+                <div class="tachie-param">
+                    <label>拡大率 (%)</label>
+                    <input type="number" class="tachie-scale" data-index="${i}" value="${data.scale}" step="1" min="1" max="1000">
+                </div>
+            </div>
+        `;
+        container.appendChild(row);
+    }
+
+    // 画像選択ボタンのイベント
+    container.querySelectorAll(".btn-tachie-select").forEach(btn => {
+        btn.addEventListener("click", (e) => selectTachieImage(parseInt(e.target.dataset.index)));
+    });
+
+    // クリアボタンのイベント
+    container.querySelectorAll(".btn-tachie-clear").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+            const idx = parseInt(e.target.dataset.index);
+            tachieData[idx].file = "";
+            const label = container.querySelector(`.tachie-file-name[data-index="${idx}"]`);
+            if (label) label.textContent = "未選択";
+            scheduleAutoSave();
+        });
+    });
+
+    // パラメータ入力のイベント
+    container.querySelectorAll(".tachie-x, .tachie-y, .tachie-scale").forEach(input => {
+        input.addEventListener("change", (e) => {
+            const idx = parseInt(e.target.dataset.index);
+            if (e.target.classList.contains("tachie-x")) tachieData[idx].x = parseFloat(e.target.value) || 0;
+            if (e.target.classList.contains("tachie-y")) tachieData[idx].y = parseFloat(e.target.value) || 0;
+            if (e.target.classList.contains("tachie-scale")) tachieData[idx].scale = parseFloat(e.target.value) || 100;
+            scheduleAutoSave();
+        });
+    });
+}
+
+async function selectTachieImage(speakerIndex) {
+    try {
+        const path = await pywebview.api.select_image_file();
+        if (path) {
+            tachieData[speakerIndex].file = path;
+            const label = document.querySelector(`.tachie-file-name[data-index="${speakerIndex}"]`);
+            if (label) label.textContent = path.split(/[\\/]/).pop();
+            scheduleAutoSave();
+        }
+    } catch (e) {
+        console.error("画像選択エラー:", e);
+    }
+}
+
 // --- exo設定を収集 ---
 function collectExoSettings() {
     const speakerColors = [];
@@ -157,6 +250,12 @@ function collectExoSettings() {
         pos_y: parseFloat($("#exo-pos-y").value) || 0,
         speaker_colors: speakerColors,
         speaker_edge_colors: speakerEdgeColors,
+        speaker_images: tachieData.map(d => ({
+            file: d.file || "",
+            x: d.x || 0,
+            y: d.y || 0,
+            scale: d.scale || 100,
+        })),
     };
 }
 
@@ -353,6 +452,17 @@ async function loadSavedSettings() {
         updateExoSettingsVisibility();
         renderSpeakerColors();
 
+        // 立ち絵設定の復元
+        if (exo?.speaker_images?.length > 0) {
+            tachieData = exo.speaker_images.map(img => ({
+                file: img.file || "",
+                x: img.x || 0,
+                y: img.y || 0,
+                scale: img.scale || 100,
+            }));
+        }
+        renderSpeakerTachie();
+
         // 話者色の復元（renderSpeakerColors後）
         if (exo?.speaker_edge_colors?.length > 0) {
             document.querySelectorAll(".speaker-edge-hex").forEach((el, i) => {
@@ -397,7 +507,10 @@ function setupAutoSave() {
     for (const id of ["model-size", "language", "num-speakers", "output-format"]) {
         $(`#${id}`).addEventListener("change", () => {
             if (id === "output-format") updateExoSettingsVisibility();
-            if (id === "num-speakers") renderSpeakerColors();
+            if (id === "num-speakers") {
+                renderSpeakerColors();
+                renderSpeakerTachie();
+            }
             scheduleAutoSave();
         });
     }
@@ -414,6 +527,8 @@ function setupAutoSave() {
     }
     // 話者色は動的なのでcontainerに委任
     $("#speaker-colors-list").addEventListener("input", scheduleAutoSave);
+    // 立ち絵設定も動的
+    $("#speaker-tachie-list").addEventListener("input", scheduleAutoSave);
 }
 
 // --- ユーティリティ ---
