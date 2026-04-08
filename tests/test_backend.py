@@ -251,6 +251,87 @@ class TestDiarizer:
         _fill_missing_speakers(segments)
         assert segments[1].speaker == "Speaker 1"  # 前方伝播
 
+    def test_split_into_windows(self):
+        """_split_into_windowsが正しくサブウィンドウに分割する。"""
+        from aviutl_whisper.diarizer import _split_into_windows
+        windows = _split_into_windows(0.0, 10.0, 2.5)
+        assert len(windows) == 4
+        assert windows[0] == (0.0, 2.5)
+        assert windows[1] == (2.5, 5.0)
+        assert windows[2] == (5.0, 7.5)
+        assert windows[3] == (7.5, 10.0)
+
+    def test_split_into_windows_short(self):
+        """短いセグメントは分割されない。"""
+        from aviutl_whisper.diarizer import _split_into_windows
+        windows = _split_into_windows(0.0, 2.0, 2.5)
+        assert len(windows) == 1
+        assert windows[0] == (0.0, 2.0)
+
+    def test_split_into_windows_remainder(self):
+        """端数のウィンドウがMIN_SEGMENT_DURATION未満なら除外される。"""
+        from aviutl_whisper.diarizer import _split_into_windows, MIN_SEGMENT_DURATION
+        # 5.3秒を2.5秒ウィンドウで分割: [0-2.5], [2.5-5.0], [5.0-5.3]
+        # 残り0.3秒 < MIN_SEGMENT_DURATION(0.5) → 除外
+        windows = _split_into_windows(0.0, 5.3, 2.5)
+        assert len(windows) == 2
+        assert windows[-1] == (2.5, 5.0)
+
+    def test_match_speakers_by_overlap(self):
+        """pyannoteセグメントとの重複マッチングが正しく動作する。"""
+        from aviutl_whisper.diarizer import _match_speakers_by_overlap
+        from aviutl_whisper.transcriber import TranscriptionSegment
+
+        segments = [
+            TranscriptionSegment(start=0.0, end=2.0, text="aaa"),
+            TranscriptionSegment(start=2.0, end=4.0, text="bbb"),
+            TranscriptionSegment(start=4.0, end=6.0, text="ccc"),
+        ]
+        # pyannote: speaker A talks 0-3s, speaker B talks 3-6s
+        pyannote_segs = [
+            (0.0, 3.0, "SPEAKER_00"),
+            (3.0, 6.0, "SPEAKER_01"),
+        ]
+        speaker_map = {"SPEAKER_00": "Speaker 1", "SPEAKER_01": "Speaker 2"}
+        result = _match_speakers_by_overlap(segments, pyannote_segs, speaker_map)
+        assert result[0].speaker == "Speaker 1"  # 0-2s: fully in SPEAKER_00
+        assert result[1].speaker == "Speaker 1"  # 2-4s: 1s overlap with A, 1s with B → tie → first wins
+        assert result[2].speaker == "Speaker 2"  # 4-6s: fully in SPEAKER_01
+
+    def test_match_speakers_by_overlap_no_pyannote(self):
+        """pyannoteセグメントが空の場合、話者はNoneになる。"""
+        from aviutl_whisper.diarizer import _match_speakers_by_overlap
+        from aviutl_whisper.transcriber import TranscriptionSegment
+
+        segments = [
+            TranscriptionSegment(start=0.0, end=2.0, text="test"),
+        ]
+        result = _match_speakers_by_overlap(segments, [], {})
+        assert result[0].speaker is None
+
+    def test_assign_speakers_pyannote_empty(self):
+        """空セグメントリストでpyannote話者分離が正常に返る。"""
+        from aviutl_whisper.diarizer import assign_speakers_pyannote
+        result = assign_speakers_pyannote(pipeline=None, audio_path="", segments=[])
+        assert result == []
+
+    def test_match_speakers_overlap_partial(self):
+        """部分的な重複でも正しい話者が割り当てられる。"""
+        from aviutl_whisper.diarizer import _match_speakers_by_overlap
+        from aviutl_whisper.transcriber import TranscriptionSegment
+
+        segments = [
+            TranscriptionSegment(start=1.0, end=3.0, text="test"),
+        ]
+        # SPEAKER_00: 0-1.5s (0.5s overlap), SPEAKER_01: 1.5-4.0s (1.5s overlap)
+        pyannote_segs = [
+            (0.0, 1.5, "SPEAKER_00"),
+            (1.5, 4.0, "SPEAKER_01"),
+        ]
+        speaker_map = {"SPEAKER_00": "Speaker 1", "SPEAKER_01": "Speaker 2"}
+        result = _match_speakers_by_overlap(segments, pyannote_segs, speaker_map)
+        assert result[0].speaker == "Speaker 2"  # more overlap with SPEAKER_01
+
 
 # ============================================================
 # exporter.py テスト
@@ -394,6 +475,127 @@ class TestExporter:
         s = ExoSettings.from_dict(None)
         assert s.font_size == 34
 
+    def test_exo_settings_with_speaker_images(self):
+        """ExoSettings.from_dict()がspeaker_imagesを正しくパースする。"""
+        from aviutl_whisper.exporter import ExoSettings, SpeakerImageSettings
+        d = {
+            "speaker_images": [
+                {"file": "C:\\img\\speaker1.png", "x": 100.0, "y": -50.0, "scale": 80.0},
+                {"file": "C:\\img\\speaker2.png", "x": -100.0, "y": -50.0, "scale": 120.0},
+            ],
+        }
+        s = ExoSettings.from_dict(d)
+        assert len(s.speaker_images) == 2
+        assert s.speaker_images[0].file == "C:\\img\\speaker1.png"
+        assert s.speaker_images[0].x == 100.0
+        assert s.speaker_images[0].y == -50.0
+        assert s.speaker_images[0].scale == 80.0
+        assert s.speaker_images[1].file == "C:\\img\\speaker2.png"
+
+    def test_exo_get_speaker_image(self):
+        """get_speaker_image()が正しい設定を返す。"""
+        from aviutl_whisper.exporter import ExoSettings, SpeakerImageSettings
+        s = ExoSettings(speaker_images=[
+            SpeakerImageSettings(file="a.png", x=10, y=20, scale=50),
+            SpeakerImageSettings(file="", x=0, y=0, scale=100),
+        ])
+        img0 = s.get_speaker_image(0)
+        assert img0 is not None
+        assert img0.file == "a.png"
+        # file が空の場合はNone
+        assert s.get_speaker_image(1) is None
+        # 範囲外もNone
+        assert s.get_speaker_image(5) is None
+
+    def test_build_speaker_intervals_basic(self, sample_segments):
+        """_build_speaker_intervals が話中/非話中を正しく分割する。"""
+        from aviutl_whisper.exporter import _build_speaker_intervals
+        fps = 30.0
+        total_frames = int(5.0 * fps) + 1  # 5秒分
+        intervals = _build_speaker_intervals(sample_segments, "Speaker 1", fps, total_frames)
+        # 少なくとも1つの話中区間がある
+        talking = [iv for iv in intervals if iv[2] is True]
+        assert len(talking) >= 1
+        # 全区間がタイムライン全体をカバーする
+        assert intervals[0][0] == 1
+        assert intervals[-1][1] == total_frames
+
+    def test_build_speaker_intervals_no_segments(self):
+        """話者のセグメントが無い場合は全体が非話中。"""
+        from aviutl_whisper.exporter import _build_speaker_intervals
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        segs = [TranscriptionSegment(start=1.0, end=2.0, text="hello", speaker="Speaker 1")]
+        intervals = _build_speaker_intervals(segs, "Speaker 2", 30.0, 100)
+        assert len(intervals) == 1
+        assert intervals[0] == (1, 100, False)
+
+    def test_build_speaker_intervals_coverage(self):
+        """区間がタイムライン全体をカバーし、隙間がない。"""
+        from aviutl_whisper.exporter import _build_speaker_intervals
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        segs = [
+            TranscriptionSegment(start=1.0, end=2.0, text="a", speaker="S1"),
+            TranscriptionSegment(start=3.0, end=4.0, text="b", speaker="S1"),
+        ]
+        intervals = _build_speaker_intervals(segs, "S1", 30.0, 150)
+        # 隙間なくカバーしているか
+        for i in range(len(intervals) - 1):
+            assert intervals[i][1] + 1 == intervals[i + 1][0]
+        assert intervals[0][0] == 1
+        assert intervals[-1][1] == 150
+
+    def test_emit_image_objects(self):
+        """_emit_image_objects が正しいexo行を出力する。"""
+        from aviutl_whisper.exporter import _emit_image_objects, SpeakerImageSettings
+        img = SpeakerImageSettings(file="C:\\img\\test.png", x=100.0, y=-50.0, scale=80.0)
+        intervals = [(1, 30, True), (31, 60, False)]
+        lines = []
+        next_idx = _emit_image_objects(lines, intervals, img, layer=101, obj_idx_start=5)
+        assert next_idx == 7
+        content = "\n".join(lines)
+        assert "[5]" in content
+        assert "[6]" in content
+        assert "layer=101" in content
+        assert "_name=画像ファイル" in content
+        assert "file=C:\\img\\test.png" in content
+        assert "_name=標準描画" in content
+        assert "X=100.0" in content
+        assert "Y=-50.0" in content
+        assert "拡大率=80.00" in content
+        assert "_name=色調補正" in content
+        assert "彩度=100.0" in content  # 話中
+        assert "彩度=0.0" in content    # 非話中
+
+    def test_exo_with_tachie(self, sample_segments):
+        """立ち絵付きexo出力が画像オブジェクトを含む。"""
+        from aviutl_whisper.exporter import ExoSettings, SpeakerImageSettings, export_exo
+        settings = ExoSettings(
+            speaker_images=[
+                SpeakerImageSettings(file="C:\\img\\s1.png", x=200, y=-100, scale=80),
+                SpeakerImageSettings(file="C:\\img\\s2.png", x=-200, y=-100, scale=80),
+            ],
+        )
+        text = export_exo(sample_segments, settings=settings)
+        assert "画像ファイル" in text
+        assert "file=C:\\img\\s1.png" in text
+        assert "file=C:\\img\\s2.png" in text
+        assert "色調補正" in text
+        assert "layer=101" in text or "layer=1" in text  # tachie layers
+        assert "layer=102" in text or "layer=2" in text
+        # New layer structure: tachie 1,2 → text 3,4 (consecutive, no gaps)
+        assert "layer=1\r\n" in text
+        assert "layer=2\r\n" in text
+        assert "layer=3\r\n" in text
+        assert "layer=4\r\n" in text
+
+    def test_exo_without_tachie(self, sample_segments):
+        """立ち絵なしのexo出力に画像オブジェクトが含まれない。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(speaker_images=[])
+        text = export_exo(sample_segments, settings=settings)
+        assert "画像ファイル" not in text
+        assert "色調補正" not in text
+
     def test_exo_rgb_to_bgr(self):
         """exoは色をRGBそのまま使用する (BGR変換なし)。"""
         from aviutl_whisper.exporter import ExoSettings
@@ -469,6 +671,171 @@ class TestExporter:
         content = open(result, encoding="utf-8").read()
         assert "こんにちは" in content
 
+    def test_exo_background_image(self, sample_segments):
+        """背景画像が設定されている場合、layer=1に画像ファイルオブジェクトが出力される。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(background_image="C:\\bg\\background.png")
+        text = export_exo(sample_segments, settings=settings)
+        # 背景画像がexoに含まれる
+        assert "file=C:\\bg\\background.png" in text
+        # 背景画像は最初のオブジェクト ([0])
+        lines = text.split("\r\n")
+        obj0_idx = lines.index("[0]")
+        # 背景は layer=1
+        assert "layer=1" in lines[obj0_idx + 3]
+        # start=1, end=total_frames
+        assert lines[obj0_idx + 1] == "start=1"
+        # テキストは layer=2, 3 (2話者、背景あり、立ち絵なし)
+        assert "layer=2\r\n" in text
+        assert "layer=3\r\n" in text
+
+    def test_exo_background_image_empty(self, sample_segments):
+        """背景画像が空の場合、画像ファイルオブジェクトが出力されない。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(background_image="")
+        text = export_exo(sample_segments, settings=settings)
+        # 背景画像関連は含まれない (ただし立ち絵の画像ファイルとは区別)
+        # テキストのlayerが1から始まる
+        assert "layer=1\r\n" in text
+
+    def test_exo_layer_order_bg_tachie_text(self, sample_segments):
+        """レイヤー順が 背景→立ち絵→テキスト の連番になる。"""
+        from aviutl_whisper.exporter import ExoSettings, SpeakerImageSettings, export_exo
+        settings = ExoSettings(
+            background_image="C:\\bg\\bg.png",
+            speaker_images=[
+                SpeakerImageSettings(file="C:\\img\\s1.png", x=0, y=0, scale=100),
+                SpeakerImageSettings(file="C:\\img\\s2.png", x=0, y=0, scale=100),
+            ],
+        )
+        text = export_exo(sample_segments, settings=settings)
+        import re
+        layers = [int(m.group(1)) for m in re.finditer(r"layer=(\d+)", text)]
+        unique_layers = sorted(set(layers))
+        # 背景=1, 立ち絵=2,3, テキスト=4,5 → 連番
+        assert unique_layers == [1, 2, 3, 4, 5]
+
+    def test_exo_layer_order_tachie_text_no_bg(self, sample_segments):
+        """背景なし: 立ち絵→テキスト の連番。"""
+        from aviutl_whisper.exporter import ExoSettings, SpeakerImageSettings, export_exo
+        settings = ExoSettings(
+            speaker_images=[
+                SpeakerImageSettings(file="C:\\img\\s1.png", x=0, y=0, scale=100),
+                SpeakerImageSettings(file="C:\\img\\s2.png", x=0, y=0, scale=100),
+            ],
+        )
+        text = export_exo(sample_segments, settings=settings)
+        import re
+        layers = [int(m.group(1)) for m in re.finditer(r"layer=(\d+)", text)]
+        unique_layers = sorted(set(layers))
+        # 立ち絵=1,2, テキスト=3,4 → 連番
+        assert unique_layers == [1, 2, 3, 4]
+
+    def test_exo_layer_order_text_only(self, sample_segments):
+        """背景も立ち絵もなし: テキストのみ layer=1,2。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings()
+        text = export_exo(sample_segments, settings=settings)
+        import re
+        layers = [int(m.group(1)) for m in re.finditer(r"layer=(\d+)", text)]
+        unique_layers = sorted(set(layers))
+        assert unique_layers == [1, 2]
+
+    def test_exo_settings_background_image(self):
+        """ExoSettingsのbackground_imageフィールドが正しく動作する。"""
+        from aviutl_whisper.exporter import ExoSettings
+        s = ExoSettings(background_image="C:\\bg\\test.png")
+        assert s.background_image == "C:\\bg\\test.png"
+
+    def test_exo_settings_from_dict_background(self):
+        """from_dictでbackground_imageが正しく読み込まれる。"""
+        from aviutl_whisper.exporter import ExoSettings
+        s = ExoSettings.from_dict({"background_image": "C:\\bg\\test.png"})
+        assert s.background_image == "C:\\bg\\test.png"
+        # 空の場合
+        s2 = ExoSettings.from_dict({})
+        assert s2.background_image == ""
+
+    def test_wrap_text_basic(self):
+        """_wrap_textが指定文字数で改行する。"""
+        from aviutl_whisper.exporter import _wrap_text
+        assert _wrap_text("あいうえおかきくけこ", 5) == "あいうえお\nかきくけこ"
+
+    def test_wrap_text_short(self):
+        """_wrap_textが短いテキストをそのまま返す。"""
+        from aviutl_whisper.exporter import _wrap_text
+        assert _wrap_text("abc", 10) == "abc"
+
+    def test_wrap_text_zero(self):
+        """_wrap_textが0の場合テキストをそのまま返す。"""
+        from aviutl_whisper.exporter import _wrap_text
+        text = "あいうえおかきくけこさしすせそ"
+        assert _wrap_text(text, 0) == text
+
+    def test_wrap_text_preserves_existing_newlines(self):
+        """_wrap_textが既存の改行を保持する。"""
+        from aviutl_whisper.exporter import _wrap_text
+        assert _wrap_text("あいう\nえおか", 5) == "あいう\nえおか"
+
+    def test_wrap_text_long(self):
+        """_wrap_textが長いテキストを複数行に分割する。"""
+        from aviutl_whisper.exporter import _wrap_text
+        result = _wrap_text("123456789012345", 5)
+        assert result == "12345\n67890\n12345"
+
+    def test_exo_text_wrapping(self, sample_segments):
+        """exo出力でテキストが改行される。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo, _encode_exo_text
+        settings = ExoSettings(max_chars_per_line=5)
+        text = export_exo(sample_segments, settings=settings)
+        # "こんにちは" は5文字なので改行なし
+        hello_hex = _encode_exo_text("こんにちは")
+        assert hello_hex in text
+
+    def test_exo_settings_max_chars(self):
+        """ExoSettingsのmax_chars_per_lineフィールド。"""
+        from aviutl_whisper.exporter import ExoSettings
+        s = ExoSettings()
+        assert s.max_chars_per_line == 20
+        s2 = ExoSettings.from_dict({"max_chars_per_line": 30})
+        assert s2.max_chars_per_line == 30
+
+    def test_detect_device_large_model(self):
+        """large-v3モデルの場合、GPU時はint8_float16が選択される。"""
+        from aviutl_whisper.models import _detect_device
+        device, compute_type = _detect_device("large-v3")
+        assert device in ("cuda", "cpu")
+        if device == "cuda":
+            assert compute_type == "int8_float16"
+        else:
+            assert compute_type == "int8"
+
+    def test_detect_device_medium_model(self):
+        """mediumモデルの場合、GPU時はfloat16が選択される。"""
+        from aviutl_whisper.models import _detect_device
+        device, compute_type = _detect_device("medium")
+        assert device in ("cuda", "cpu")
+        if device == "cuda":
+            assert compute_type == "float16"
+        else:
+            assert compute_type == "int8"
+
+    def test_exo_edge_type(self, sample_segments):
+        """soft_edge=Trueの場合、type=3(縁取り)が出力される。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(soft_edge=True)
+        text = export_exo(sample_segments, settings=settings)
+        assert "type=3" in text
+        assert "soft=1" in text
+
+    def test_exo_no_edge_type(self, sample_segments):
+        """soft_edge=Falseの場合、type=0(標準)が出力される。"""
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        settings = ExoSettings(soft_edge=False)
+        text = export_exo(sample_segments, settings=settings)
+        assert "type=0" in text
+        assert "soft=0" in text
+
 
 # ============================================================
 # api.py テスト
@@ -493,6 +860,92 @@ class TestApi:
         progress = api.get_progress()
         assert "progress" in progress
         assert "message" in progress
+
+
+# ============================================================
+# speaker mapping テスト
+# ============================================================
+
+class TestSpeakerMapping:
+    """話者マッピング機能のテスト。"""
+
+    @pytest.fixture
+    def two_speaker_segments(self):
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        return [
+            TranscriptionSegment(start=0.0, end=1.0, text="おはよう", speaker="Speaker 1"),
+            TranscriptionSegment(start=1.0, end=2.0, text="こんにちは", speaker="Speaker 2"),
+            TranscriptionSegment(start=2.0, end=3.0, text="元気？", speaker="Speaker 1"),
+            TranscriptionSegment(start=3.0, end=4.0, text="うん", speaker="Speaker 2"),
+        ]
+
+    def test_apply_mapping_none(self, two_speaker_segments):
+        """mapping=Noneの場合はセグメントがそのまま返る。"""
+        from aviutl_whisper.api import _apply_speaker_mapping
+        result = _apply_speaker_mapping(two_speaker_segments, None)
+        assert result is two_speaker_segments
+
+    def test_apply_mapping_default(self, two_speaker_segments):
+        """デフォルトマッピング(変更なし)の場合はそのまま返る。"""
+        from aviutl_whisper.api import _apply_speaker_mapping
+        mapping = {"Speaker 1": 0, "Speaker 2": 1}
+        result = _apply_speaker_mapping(two_speaker_segments, mapping)
+        assert result is two_speaker_segments
+
+    def test_apply_mapping_swap(self, two_speaker_segments):
+        """話者を入れ替えるマッピングが正しく動作する。"""
+        from aviutl_whisper.api import _apply_speaker_mapping
+        mapping = {"Speaker 1": 1, "Speaker 2": 0}
+        result = _apply_speaker_mapping(two_speaker_segments, mapping)
+        # Speaker 1 のセグメント(index 0,2) が Speaker 2 に、逆も同様
+        assert result[0].speaker == "Speaker 2"
+        assert result[0].text == "おはよう"
+        assert result[1].speaker == "Speaker 1"
+        assert result[1].text == "こんにちは"
+        assert result[2].speaker == "Speaker 2"
+        assert result[3].speaker == "Speaker 1"
+
+    def test_apply_mapping_swap_exo_colors(self, two_speaker_segments):
+        """マッピング入れ替え後のexo出力で色が正しく割り当てられる。"""
+        from aviutl_whisper.api import _apply_speaker_mapping
+        from aviutl_whisper.exporter import ExoSettings, export_exo
+        mapping = {"Speaker 1": 1, "Speaker 2": 0}
+        swapped = _apply_speaker_mapping(two_speaker_segments, mapping)
+        settings = ExoSettings(speaker_colors=["ff0000", "00ff00"])
+        text = export_exo(swapped, settings=settings)
+        # "おはよう" は元Speaker1だがswap後はSpeaker2 → layer 2, color 00ff00
+        # "こんにちは" は元Speaker2だがswap後はSpeaker1 → layer 1, color ff0000
+        assert "color=ff0000" in text
+        assert "color=00ff00" in text
+
+    def test_build_speaker_info(self):
+        """_build_speaker_infoが話者情報を正しく返す。"""
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        api = Api()
+        segs = [
+            TranscriptionSegment(start=0.0, end=1.0, text="hello world", speaker="Speaker 1"),
+            TranscriptionSegment(start=1.0, end=2.0, text="hi there", speaker="Speaker 2"),
+            TranscriptionSegment(start=2.0, end=3.0, text="ok", speaker="Speaker 1"),
+        ]
+        info = api._build_speaker_info(segs)
+        assert len(info) == 2
+        assert info[0]["name"] == "Speaker 1"
+        assert info[0]["segment_count"] == 2
+        assert info[0]["sample_text"] == "hello world"
+        assert info[0]["first_start"] == 0.0
+        assert info[1]["name"] == "Speaker 2"
+        assert info[1]["segment_count"] == 1
+
+    def test_apply_mapping_preserves_text(self, two_speaker_segments):
+        """マッピング適用後もテキストとタイムスタンプが保持される。"""
+        from aviutl_whisper.api import _apply_speaker_mapping
+        mapping = {"Speaker 1": 1, "Speaker 2": 0}
+        result = _apply_speaker_mapping(two_speaker_segments, mapping)
+        for orig, mapped in zip(two_speaker_segments, result):
+            assert orig.start == mapped.start
+            assert orig.end == mapped.end
+            assert orig.text == mapped.text
 
 
 # ============================================================
@@ -539,3 +992,72 @@ class TestSettings:
         assert result["b"]["c"] == 99
         assert result["b"]["d"] == 3
         assert result["e"] == 5
+
+    def test_default_settings_has_diarization_method(self):
+        """デフォルト設定にdiarization_methodが含まれる。"""
+        from aviutl_whisper.settings import DEFAULT_SETTINGS
+        assert "diarization_method" in DEFAULT_SETTINGS
+        assert DEFAULT_SETTINGS["diarization_method"] == "speechbrain"
+
+    def test_default_settings_has_hf_token_encrypted(self):
+        """デフォルト設定にhf_token_encryptedが含まれる。"""
+        from aviutl_whisper.settings import DEFAULT_SETTINGS
+        assert "hf_token_encrypted" in DEFAULT_SETTINGS
+        assert DEFAULT_SETTINGS["hf_token_encrypted"] == ""
+
+    def test_encrypt_decrypt_token_empty(self):
+        """空トークンの暗号化/復号。"""
+        from aviutl_whisper.settings import encrypt_token, decrypt_token
+        assert encrypt_token("") == ""
+        assert decrypt_token("") == ""
+
+    def test_encrypt_decrypt_token_roundtrip(self):
+        """トークンの暗号化→復号ラウンドトリップ。"""
+        from aviutl_whisper.settings import encrypt_token, decrypt_token
+        token = "hf_test_token_12345"
+        encrypted = encrypt_token(token)
+        assert encrypted != ""
+        assert encrypted != token  # 暗号化されている
+        decrypted = decrypt_token(encrypted)
+        assert decrypted == token
+
+    def test_encrypt_token_b64_fallback(self, monkeypatch):
+        """DPAPI不使用時のbase64フォールバック。"""
+        import platform
+        from aviutl_whisper import settings
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        token = "hf_fallback_test"
+        encrypted = settings.encrypt_token(token)
+        assert encrypted.startswith("b64:")
+        decrypted = settings.decrypt_token(encrypted)
+        assert decrypted == token
+
+
+# ============================================================
+# pyannote models テスト
+# ============================================================
+
+class TestPyannoteModels:
+    """pyannote関連のモデルロードテスト。"""
+
+    def test_load_pyannote_missing_token(self):
+        """トークンなしでpyannoteロードするとValueError。"""
+        pytest.importorskip("pyannote.audio")
+        from aviutl_whisper.models import load_pyannote_pipeline
+        with pytest.raises(ValueError, match="HuggingFaceトークン"):
+            load_pyannote_pipeline(hf_token="")
+
+    def test_load_pyannote_not_installed(self, monkeypatch):
+        """pyannote未インストール時にImportError。"""
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "pyannote.audio" or name.startswith("pyannote"):
+                raise ImportError("No module named 'pyannote'")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        from aviutl_whisper.models import load_pyannote_pipeline
+        with pytest.raises(ImportError, match="pyannote.audioがインストールされていません"):
+            load_pyannote_pipeline(hf_token="hf_test_token")

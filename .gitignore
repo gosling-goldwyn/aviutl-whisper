@@ -12,3 +12,5 @@ wheels/
 # テスト用音声ファイル
 test.m4a
 *.m4a
+
+.env

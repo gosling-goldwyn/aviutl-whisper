@@ -66,6 +66,20 @@
                         <option value="exo">AviUtl exo (.exo)</option>
                     </select>
                 </div>
+                <div class="setting-item">
+                    <label for="diarization-method">話者分離方式</label>
+                    <select id="diarization-method">
+                        <option value="speechbrain" selected>speechbrain (内蔵)</option>
+                        <option value="pyannote">pyannote (高精度)</option>
+                    </select>
+                </div>
+                <div class="setting-item" id="hf-token-item" style="display: none;">
+                    <label for="hf-token">HuggingFace トークン</label>
+                    <input type="password" id="hf-token" placeholder="hf_xxxxxxxxxxxx">
+                    <small class="hf-token-hint">
+                        <a href="#" id="hf-token-link" title="HuggingFaceでトークンを取得">トークンの取得方法</a>
+                    </small>
+                </div>
             </div>
         </section>
 
@@ -116,6 +130,10 @@
                     <label for="exo-pos-y">Y位置</label>
                     <input type="number" id="exo-pos-y" value="0" step="0.1">
                 </div>
+                <div class="setting-item">
+                    <label for="exo-max-chars">1行の最大文字数</label>
+                    <input type="number" id="exo-max-chars" value="20" min="0" max="200">
+                </div>
             </div>
             <div class="settings-row" style="margin-top: 12px;">
                 <label class="checkbox-label">
@@ -128,9 +146,22 @@
                     <input type="checkbox" id="exo-soft-edge" checked> 縁取り（ソフトエッジ）
                 </label>
             </div>
+            <div class="background-image-area" style="margin-top: 16px;">
+                <h3>🏞️ 背景画像</h3>
+                <div class="bg-image-row">
+                    <button id="btn-bg-image" class="btn btn-tachie-select">画像選択</button>
+                    <span id="bg-image-name" class="tachie-file-name">未選択</span>
+                    <button id="btn-bg-image-clear" class="btn-tachie-clear" title="クリア">✕</button>
+                </div>
+            </div>
             <div class="speaker-colors-area" id="speaker-colors-area" style="margin-top: 16px;">
                 <h3>🎨 話者ごとの色設定</h3>
                 <div id="speaker-colors-list"></div>
+            </div>
+            <div class="speaker-tachie-area" id="speaker-tachie-area" style="margin-top: 16px;">
+                <h3>🖼️ 話者ごとの立ち絵設定</h3>
+                <p class="tachie-description">話者が話している間はカラー、話していない間はモノクロで表示されます</p>
+                <div id="speaker-tachie-list"></div>
             </div>
         </section>
 
@@ -150,6 +181,12 @@
         <section class="card hidden" id="result-section">
             <h2>📝 結果プレビュー</h2>
             <div class="result-stats" id="result-stats"></div>
+            <div id="speaker-mapping-area" class="speaker-mapping-area hidden">
+                <h3>🗣️ 話者の確認</h3>
+                <p class="mapping-description">サンプル音声を再生して話者を確認し、設定スロットを割り当てできます</p>
+                <div id="speaker-mapping-list"></div>
+                <button id="btn-swap-speakers" class="btn btn-swap hidden">🔄 話者を入れ替え</button>
+            </div>
             <div class="result-preview">
                 <textarea id="result-text" readonly></textarea>
             </div>

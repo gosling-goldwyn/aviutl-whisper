@@ -225,6 +225,90 @@ select:focus {
     border-radius: 4px;
 }
 
+/* 話者マッピングパネル */
+.speaker-mapping-area {
+    margin-bottom: 12px;
+    padding: 12px;
+    background: var(--bg);
+    border-radius: var(--radius);
+}
+
+.speaker-mapping-area h3 {
+    font-size: 0.95rem;
+    margin-bottom: 4px;
+    color: var(--text);
+}
+
+.mapping-description {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+.speaker-mapping-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 6px;
+    padding: 6px 10px;
+    background: var(--bg-card);
+    border-radius: var(--radius);
+}
+
+.btn-play-sample {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+}
+
+.btn-play-sample:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.color-preview-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+}
+
+.speaker-mapping-row .mapping-label {
+    font-size: 0.85rem;
+    min-width: 70px;
+    color: var(--text);
+}
+
+.speaker-mapping-row .sample-text {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.speaker-mapping-row .mapping-select {
+    width: auto;
+    min-width: 100px;
+    padding: 4px 8px;
+    font-size: 0.82rem;
+}
+
+.btn-swap {
+    margin-top: 8px;
+    padding: 6px 16px;
+    font-size: 0.85rem;
+}
+
 .result-preview {
     margin-bottom: 12px;
 }
@@ -316,6 +400,21 @@ input[type="color"] {
     color: var(--text);
 }
 
+.background-image-area h3 {
+    font-size: 0.95rem;
+    margin-bottom: 8px;
+    color: var(--text);
+}
+
+.bg-image-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border-radius: var(--radius);
+}
+
 .speaker-color-row {
     display: flex;
     align-items: center;
@@ -352,6 +451,124 @@ input[type="color"] {
 }
 
 .speaker-color-row input[type="text"].hex-input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* 立ち絵設定パネル */
+.tachie-description {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+}
+
+.speaker-tachie-row {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    background: var(--bg);
+    border-radius: var(--radius);
+}
+
+.speaker-tachie-row .tachie-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.speaker-tachie-row .tachie-header .speaker-label {
+    min-width: 60px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.speaker-tachie-row .tachie-file-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+
+.speaker-tachie-row .tachie-file-name {
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.speaker-tachie-row .btn-tachie-select {
+    padding: 4px 12px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+}
+
+.speaker-tachie-row .btn-tachie-clear {
+    padding: 4px 8px;
+    font-size: 0.75rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.speaker-tachie-row .btn-tachie-clear:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.tachie-params {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+}
+
+.tachie-params .tachie-param {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.tachie-params .tachie-param label {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.tachie-params .tachie-param input {
+    padding: 4px 8px;
+    font-size: 0.82rem;
+}
+
+/* HFトークン */
+.hf-token-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.hf-token-hint a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.hf-token-hint a:hover {
+    text-decoration: underline;
+}
+
+#hf-token {
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 0.9rem;
+    width: 100%;
+}
+
+#hf-token:focus {
     outline: none;
     border-color: var(--accent);
 }
