@@ -226,7 +226,7 @@ def load_pyannote_pipeline(
     logger.info("pyannoteパイプライン読み込み開始")
     pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token,
+        token=hf_token,
     )
 
     # GPU利用可能ならGPUに移動

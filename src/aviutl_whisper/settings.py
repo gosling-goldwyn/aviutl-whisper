@@ -88,7 +88,7 @@ def _deep_merge(defaults: dict, override: dict) -> dict:
 def encrypt_token(token: str) -> str:
     """HuggingFaceトークンをDPAPIで暗号化し、base64文字列として返す。
 
-    Windows: DPAPI (CryptProtectData) でユーザーアカウントに紐づいた暗号化。
+    Windows: DPAPI (CryptProtectData via ctypes) でユーザーアカウントに紐づいた暗号化。
     その他: base64エンコードのみ（難読化レベル）。
     """
     if not token:
@@ -96,13 +96,9 @@ def encrypt_token(token: str) -> str:
 
     if platform.system() == "Windows":
         try:
-            import win32crypt
-            encrypted = win32crypt.CryptProtectData(
-                token.encode("utf-8"),
-                "aviutl-whisper-hf-token",
-                None, None, None, 0,
-            )
-            return base64.b64encode(encrypted).decode("ascii")
+            encrypted = _dpapi_encrypt(token.encode("utf-8"))
+            if encrypted is not None:
+                return base64.b64encode(encrypted).decode("ascii")
         except Exception:
             logger.warning("DPAPI暗号化に失敗、base64フォールバック")
 
@@ -125,14 +121,70 @@ def decrypt_token(encrypted: str) -> str:
     # DPAPI暗号化形式
     if platform.system() == "Windows":
         try:
-            import win32crypt
             raw = base64.b64decode(encrypted)
-            _, decrypted = win32crypt.CryptUnprotectData(
-                raw, None, None, None, 0,
-            )
-            return decrypted.decode("utf-8")
+            decrypted = _dpapi_decrypt(raw)
+            if decrypted is not None:
+                return decrypted.decode("utf-8")
         except Exception:
             logger.warning("DPAPI復号に失敗")
             return ""
 
     return ""
+
+
+def _dpapi_encrypt(data: bytes) -> bytes | None:
+    """Windows DPAPI CryptProtectData をctypes経由で呼び出す。"""
+    import ctypes
+    import ctypes.wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [
+            ("cbData", ctypes.wintypes.DWORD),
+            ("pbData", ctypes.POINTER(ctypes.c_char)),
+        ]
+
+    input_blob = DATA_BLOB(len(data), ctypes.create_string_buffer(data, len(data)))
+    output_blob = DATA_BLOB()
+
+    if ctypes.windll.crypt32.CryptProtectData(
+        ctypes.byref(input_blob),
+        None,  # description
+        None,  # optional entropy
+        None,  # reserved
+        None,  # prompt struct
+        0,     # flags
+        ctypes.byref(output_blob),
+    ):
+        result = ctypes.string_at(output_blob.pbData, output_blob.cbData)
+        ctypes.windll.kernel32.LocalFree(output_blob.pbData)
+        return result
+    return None
+
+
+def _dpapi_decrypt(data: bytes) -> bytes | None:
+    """Windows DPAPI CryptUnprotectData をctypes経由で呼び出す。"""
+    import ctypes
+    import ctypes.wintypes
+
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [
+            ("cbData", ctypes.wintypes.DWORD),
+            ("pbData", ctypes.POINTER(ctypes.c_char)),
+        ]
+
+    input_blob = DATA_BLOB(len(data), ctypes.create_string_buffer(data, len(data)))
+    output_blob = DATA_BLOB()
+
+    if ctypes.windll.crypt32.CryptUnprotectData(
+        ctypes.byref(input_blob),
+        None,  # description
+        None,  # optional entropy
+        None,  # reserved
+        None,  # prompt struct
+        0,     # flags
+        ctypes.byref(output_blob),
+    ):
+        result = ctypes.string_at(output_blob.pbData, output_blob.cbData)
+        ctypes.windll.kernel32.LocalFree(output_blob.pbData)
+        return result
+    return None
