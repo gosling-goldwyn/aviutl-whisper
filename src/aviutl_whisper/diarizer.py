@@ -306,8 +306,12 @@ def assign_speakers_pyannote(
         progress_callback(0.5, "話者ラベル割り当て中...")
 
     # pyannote結果からタイムラインを取得
+    # pyannote 4.x: DiarizeOutput dataclass → .speaker_diarization が Annotation
+    # pyannote 3.x: 直接 Annotation を返す
+    annotation = getattr(diarization, "speaker_diarization", diarization)
+
     pyannote_segments = []
-    for turn, _, speaker in diarization.itertracks(yield_label=True):
+    for turn, _, speaker in annotation.itertracks(yield_label=True):
         pyannote_segments.append((turn.start, turn.end, speaker))
 
     # pyannoteの話者ラベルを正規化 (SPEAKER_00 → Speaker 1)
