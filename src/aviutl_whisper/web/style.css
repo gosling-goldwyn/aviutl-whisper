@@ -599,6 +599,22 @@ input[type="color"] {
     display: block;
 }
 
+.subtitle-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.subtitle-overlay .subtitle-line {
+    position: absolute;
+    white-space: pre;
+    line-height: 1.2;
+}
+
 .preview-nav {
     display: flex;
     align-items: center;

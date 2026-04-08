@@ -50,6 +50,7 @@ function initEventListeners() {
     $("#btn-prev-seg").addEventListener("click", () => navigatePreview(-1));
     $("#btn-next-seg").addEventListener("click", () => navigatePreview(1));
     $("#btn-seg-apply").addEventListener("click", applySegmentEdit);
+    $("#btn-seg-play").addEventListener("click", playSegmentAudio);
     $("#btn-seg-add").addEventListener("click", addSegment);
     $("#btn-seg-delete").addEventListener("click", deleteSegment);
 
@@ -850,6 +851,7 @@ function drawPreviewFrame() {
 
     // クリア
     ctx.clearRect(0, 0, W, H);
+    $("#subtitle-overlay").innerHTML = "";
 
     // 1. 背景
     drawBackground(ctx, W, H);
@@ -860,7 +862,7 @@ function drawPreviewFrame() {
         drawTachie(ctx, W, H, seg.speaker);
     }
 
-    // 3. 字幕テキスト
+    // 3. 字幕テキスト（HTMLオーバーレイ）
     if (previewSegments.length > 0) {
         const seg = previewSegments[previewIndex];
         drawSubtitle(ctx, W, H, seg);
@@ -914,6 +916,11 @@ function drawTachie(ctx, W, H, activeSpeaker) {
 }
 
 function drawSubtitle(ctx, W, H, seg) {
+    // Canvas fillTextではなくHTMLオーバーレイで字幕を描画
+    const overlay = $("#subtitle-overlay");
+    const container = overlay.parentElement;
+    overlay.innerHTML = "";
+
     const settings = collectExoSettings();
     const spkIdx = getSpeakerIndex(seg.speaker);
     const colors = (settings.speaker_colors && settings.speaker_colors.length > 0)
@@ -925,55 +932,73 @@ function drawSubtitle(ctx, W, H, seg) {
 
     const fontSize = settings.font_size || 34;
     const fontName = settings.font || "MS UI Gothic";
-    const bold = settings.bold ? "bold " : "";
-    const italic = settings.italic ? "italic " : "";
-    ctx.font = `${italic}${bold}${fontSize}px "${fontName}", sans-serif`;
+    const bold = settings.bold ? "bold" : "normal";
+    const italic = settings.italic ? "italic" : "normal";
 
     // テキスト折り返し
     const maxChars = settings.max_chars_per_line || 0;
     const text = maxChars > 0 ? wrapText(seg.text, maxChars) : seg.text;
     const lines = text.split("\n");
 
-    const lineHeight = fontSize + (settings.spacing_y || 0);
-    const totalTextHeight = lines.length * lineHeight;
+    const spacingY = settings.spacing_y || 0;
+
+    // コンテナの実サイズを取得してスケール計算
+    const cRect = container.getBoundingClientRect();
+    const scaleX = cRect.width / W;
+    const scaleY = cRect.height / H;
+
+    const fontSizePx = fontSize * scaleY;
+    const lineHeightPx = (fontSize + spacingY) * scaleY;
+    const totalHeightPx = lines.length * lineHeightPx;
+    const edgeWidth = settings.soft_edge ? Math.max(1, Math.round(fontSizePx / 12)) : 0;
+    const paddingPx = 40 * scaleY;
 
     // 寄せ方向 (align: 0-8, 3x3グリッド)
     const align = settings.align != null ? settings.align : 4;
     const colAlign = align % 3;  // 0=左, 1=中, 2=右
     const rowAlign = Math.floor(align / 3);  // 0=上, 1=中, 2=下
 
-    ctx.textAlign = colAlign === 0 ? "left" : colAlign === 1 ? "center" : "right";
+    // Y位置
+    let topPx;
+    if (rowAlign === 0) topPx = paddingPx;
+    else if (rowAlign === 1) topPx = (cRect.height - totalHeightPx) / 2;
+    else topPx = cRect.height - paddingPx - totalHeightPx;
+    topPx += (settings.pos_y || 0) * scaleY;
 
-    // X基準点
-    let baseX;
-    if (colAlign === 0) baseX = 40;
-    else if (colAlign === 1) baseX = W / 2;
-    else baseX = W - 40;
-    baseX += (settings.pos_x || 0);
+    // X位置
+    let leftPx;
+    if (colAlign === 0) leftPx = paddingPx;
+    else if (colAlign === 1) leftPx = cRect.width / 2;
+    else leftPx = cRect.width - paddingPx;
+    leftPx += (settings.pos_x || 0) * scaleX;
 
-    // Y基準点
-    let baseY;
-    if (rowAlign === 0) baseY = 40 + fontSize;
-    else if (rowAlign === 1) baseY = (H - totalTextHeight) / 2 + fontSize;
-    else baseY = H - 40 - totalTextHeight + fontSize;
-    baseY += (settings.pos_y || 0);
+    // CSS transform で寄せを実現
+    let transform = "";
+    if (colAlign === 1) transform = "translateX(-50%)";
+    else if (colAlign === 2) transform = "translateX(-100%)";
 
-    // 描画
     for (let i = 0; i < lines.length; i++) {
-        const y = baseY + i * lineHeight;
-        const line = lines[i];
+        const lineDiv = document.createElement("div");
+        lineDiv.className = "subtitle-line";
+        lineDiv.textContent = lines[i];
 
-        // 縁取り
-        if (settings.soft_edge) {
-            ctx.strokeStyle = edgeColor;
-            ctx.lineWidth = Math.max(2, fontSize / 8);
-            ctx.lineJoin = "round";
-            ctx.strokeText(line, baseX, y);
-        }
+        const yPx = topPx + i * lineHeightPx;
 
-        // テキスト本体
-        ctx.fillStyle = textColor;
-        ctx.fillText(line, baseX, y);
+        lineDiv.style.cssText = [
+            `left: ${leftPx}px`,
+            `top: ${yPx}px`,
+            `font-size: ${fontSizePx}px`,
+            `font-family: "${fontName}", "Yu Gothic", "Meiryo", sans-serif`,
+            `font-weight: ${bold}`,
+            `font-style: ${italic}`,
+            `color: ${textColor}`,
+            `transform: ${transform}`,
+            edgeWidth > 0
+                ? `-webkit-text-stroke: ${edgeWidth}px ${edgeColor}; paint-order: stroke fill`
+                : "",
+        ].join("; ");
+
+        overlay.appendChild(lineDiv);
     }
 }
 
@@ -1128,6 +1153,18 @@ async function deleteSegment() {
         }
     } catch (e) {
         console.error("セグメント削除エラー:", e);
+    }
+}
+
+async function playSegmentAudio() {
+    if (previewSegments.length === 0) return;
+    try {
+        const res = await pywebview.api.play_segment_audio(previewIndex);
+        if (res && !res.success) {
+            console.warn("音声再生エラー:", res.error);
+        }
+    } catch (e) {
+        console.error("音声再生エラー:", e);
     }
 }
 

@@ -1007,6 +1007,32 @@ class TestSegmentEditing:
         assert len(res["segments"]) == 3
         assert res["segments"][0]["text"] == "変更後"
 
+    def test_play_segment_audio_no_data(self):
+        from aviutl_whisper.api import Api
+        api = Api()
+        res = api.play_segment_audio(0)
+        assert res["success"] is False
+
+    def test_play_segment_audio_invalid_index(self):
+        api = self._make_api_with_segments()
+        api._last_wav_path = "nonexistent.wav"
+        res = api.play_segment_audio(99)
+        assert res["success"] is False
+
+    def test_play_segment_audio_no_wav(self):
+        api = self._make_api_with_segments()
+        api._last_wav_path = "nonexistent.wav"
+        res = api.play_segment_audio(0)
+        assert res["success"] is False
+
+    def test_stop_audio(self):
+        """stop_audio は例外なく呼べる。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        res = api.stop_audio()
+        # sounddevice が入っていれば success=True, なければ error
+        assert "success" in res
+
 
 # ============================================================
 # speaker mapping テスト

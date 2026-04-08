@@ -455,6 +455,43 @@ class Api:
             logger.exception("音声再生エラー")
             return {"success": False, "error": str(e)}
 
+    def play_segment_audio(self, index: int):
+        """指定インデックスのセグメント区間の音声を再生する。"""
+        if not self._last_segments or not self._last_wav_path:
+            return {"success": False, "error": "再生データがありません"}
+
+        if not os.path.exists(self._last_wav_path):
+            return {"success": False, "error": "音声ファイルが見つかりません"}
+
+        if index < 0 or index >= len(self._last_segments):
+            return {"success": False, "error": "無効なインデックス"}
+
+        seg = self._last_segments[index]
+
+        try:
+            import sounddevice as sd
+            import soundfile as sf
+
+            data, sr = sf.read(self._last_wav_path)
+            start_sample = int(seg.start * sr)
+            end_sample = min(int(seg.end * sr), len(data))
+            segment_data = data[start_sample:end_sample]
+            sd.stop()
+            sd.play(segment_data, sr)
+            return {"success": True}
+        except Exception as e:
+            logger.exception("セグメント音声再生エラー")
+            return {"success": False, "error": str(e)}
+
+    def stop_audio(self):
+        """音声再生を停止する。"""
+        try:
+            import sounddevice as sd
+            sd.stop()
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def _build_speaker_info(
         self, segments: list[transcriber.TranscriptionSegment],
     ) -> list[dict]:
