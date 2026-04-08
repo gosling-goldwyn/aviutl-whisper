@@ -49,6 +49,9 @@ function initEventListeners() {
     $("#btn-bg-image-clear").addEventListener("click", clearBackgroundImage);
     $("#btn-prev-seg").addEventListener("click", () => navigatePreview(-1));
     $("#btn-next-seg").addEventListener("click", () => navigatePreview(1));
+    $("#btn-seg-apply").addEventListener("click", applySegmentEdit);
+    $("#btn-seg-add").addEventListener("click", addSegment);
+    $("#btn-seg-delete").addEventListener("click", deleteSegment);
 
     // キーボードナビゲーション（矢印キー）
     document.addEventListener("keydown", (e) => {
@@ -758,6 +761,7 @@ async function initExoPreview() {
         await preloadPreviewImages();
         drawPreviewFrame();
         updatePreviewNav();
+        populateSegmentEditor();
     } catch (e) {
         console.error("プレビュー初期化エラー:", e);
         hide(area);
@@ -799,6 +803,7 @@ function navigatePreview(delta) {
     previewIndex = newIdx;
     drawPreviewFrame();
     updatePreviewNav();
+    populateSegmentEditor();
 }
 
 function updatePreviewNav() {
@@ -812,7 +817,8 @@ function updatePreviewNav() {
         const seg = previewSegments[idx];
         const startStr = formatTime(seg.start);
         const endStr = formatTime(seg.end);
-        const colors = exoDefaults?.speaker_colors || DEFAULT_SPEAKER_COLORS;
+        const colors = (exoDefaults?.speaker_colors && exoDefaults.speaker_colors.length > 0)
+            ? exoDefaults.speaker_colors : DEFAULT_SPEAKER_COLORS;
         const spkIdx = getSpeakerIndex(seg.speaker);
         const color = colors[spkIdx % colors.length];
         $("#preview-seg-detail").innerHTML =
@@ -910,10 +916,12 @@ function drawTachie(ctx, W, H, activeSpeaker) {
 function drawSubtitle(ctx, W, H, seg) {
     const settings = collectExoSettings();
     const spkIdx = getSpeakerIndex(seg.speaker);
-    const colors = settings.speaker_colors || DEFAULT_SPEAKER_COLORS;
+    const colors = (settings.speaker_colors && settings.speaker_colors.length > 0)
+        ? settings.speaker_colors : DEFAULT_SPEAKER_COLORS;
     const textColor = "#" + (colors[spkIdx % colors.length] || "ffffff");
-    const edgeColors = settings.speaker_edge_colors || [];
-    const edgeColor = "#" + (edgeColors[spkIdx % (edgeColors.length || 1)] || "000000");
+    const edgeColors = (settings.speaker_edge_colors && settings.speaker_edge_colors.length > 0)
+        ? settings.speaker_edge_colors : ["000000"];
+    const edgeColor = "#" + (edgeColors[spkIdx % edgeColors.length] || "000000");
 
     const fontSize = settings.font_size || 34;
     const fontName = settings.font || "MS UI Gothic";
@@ -984,4 +992,150 @@ function wrapText(text, maxChars) {
 function schedulePreviewRedraw() {
     if ($("#exo-preview-area").classList.contains("hidden")) return;
     drawPreviewFrame();
+}
+
+// ============================================================
+// セグメント編集
+// ============================================================
+
+function populateSegmentEditor() {
+    const editor = $("#seg-editor");
+    if (previewSegments.length === 0) {
+        hide(editor);
+        return;
+    }
+    show(editor);
+    const seg = previewSegments[previewIndex];
+
+    // 話者ドロップダウンを構築
+    const select = $("#seg-edit-speaker");
+    const speakers = getKnownSpeakers();
+    select.innerHTML = "";
+    for (const spk of speakers) {
+        const opt = document.createElement("option");
+        opt.value = spk;
+        opt.textContent = spk;
+        if (spk === seg.speaker) opt.selected = true;
+        select.appendChild(opt);
+    }
+
+    $("#seg-edit-start").value = seg.start.toFixed(2);
+    $("#seg-edit-end").value = seg.end.toFixed(2);
+    $("#seg-edit-text").value = seg.text;
+}
+
+function getKnownSpeakers() {
+    const set = new Set();
+    for (const seg of previewSegments) {
+        set.add(seg.speaker || "Speaker 1");
+    }
+    // 常に少なくとも num-speakers 分は候補に入れる
+    const numValue = $("#num-speakers").value;
+    const numSpeakers = numValue === "auto" ? 2 : parseInt(numValue);
+    for (let i = 1; i <= Math.max(numSpeakers, set.size); i++) {
+        set.add(`Speaker ${i}`);
+    }
+    return [...set].sort();
+}
+
+async function applySegmentEdit() {
+    if (previewSegments.length === 0) return;
+    const speaker = $("#seg-edit-speaker").value;
+    const text = $("#seg-edit-text").value;
+    const start = parseFloat($("#seg-edit-start").value);
+    const end = parseFloat($("#seg-edit-end").value);
+
+    try {
+        const res = await pywebview.api.update_segment(
+            previewIndex, speaker, text, start, end
+        );
+        if (res && res.success) {
+            handleSegmentEditResponse(res);
+        } else {
+            alert("更新エラー: " + (res?.error || "不明"));
+        }
+    } catch (e) {
+        console.error("セグメント更新エラー:", e);
+    }
+}
+
+async function addSegment() {
+    // 現在セグメントの終了時刻をデフォルトにする
+    let defaultStart = 0;
+    let defaultEnd = 1;
+    if (previewSegments.length > 0) {
+        const cur = previewSegments[previewIndex];
+        defaultStart = cur.end;
+        defaultEnd = cur.end + 2.0;
+    }
+
+    const startStr = prompt("開始時刻（秒）", defaultStart.toFixed(2));
+    if (startStr === null) return;
+    const endStr = prompt("終了時刻（秒）", defaultEnd.toFixed(2));
+    if (endStr === null) return;
+    const text = prompt("テキスト", "");
+    if (text === null) return;
+
+    const start = parseFloat(startStr);
+    const end = parseFloat(endStr);
+    if (isNaN(start) || isNaN(end)) {
+        alert("無効な時刻です");
+        return;
+    }
+
+    const speakers = getKnownSpeakers();
+    const speaker = speakers[0] || "Speaker 1";
+
+    try {
+        const res = await pywebview.api.add_segment(start, end, text, speaker);
+        if (res && res.success) {
+            handleSegmentEditResponse(res);
+            // 挿入位置に移動
+            if (res.inserted_index != null) {
+                previewIndex = res.inserted_index;
+            }
+            drawPreviewFrame();
+            updatePreviewNav();
+            populateSegmentEditor();
+        } else {
+            alert("追加エラー: " + (res?.error || "不明"));
+        }
+    } catch (e) {
+        console.error("セグメント追加エラー:", e);
+    }
+}
+
+async function deleteSegment() {
+    if (previewSegments.length <= 1) {
+        alert("最後のセグメントは削除できません");
+        return;
+    }
+    if (!confirm(`セグメント ${previewIndex + 1} を削除しますか？`)) return;
+
+    try {
+        const res = await pywebview.api.delete_segment(previewIndex);
+        if (res && res.success) {
+            handleSegmentEditResponse(res);
+            // インデックスが範囲外にならないよう調整
+            if (previewIndex >= previewSegments.length) {
+                previewIndex = previewSegments.length - 1;
+            }
+            drawPreviewFrame();
+            updatePreviewNav();
+            populateSegmentEditor();
+        } else {
+            alert("削除エラー: " + (res?.error || "不明"));
+        }
+    } catch (e) {
+        console.error("セグメント削除エラー:", e);
+    }
+}
+
+function handleSegmentEditResponse(res) {
+    // previewSegmentsとテキストエリアを更新
+    previewSegments = res.segments;
+    $("#result-text").value = res.text;
+    drawPreviewFrame();
+    updatePreviewNav();
+    populateSegmentEditor();
 }

@@ -502,6 +502,96 @@ class Api:
         settings.save_settings(data)
         return {"success": True}
 
+    # --- セグメント編集 ---
+
+    def _regenerate_output(self):
+        """現在のセグメントから出力テキストを再生成して返す。"""
+        segments = _apply_speaker_mapping(
+            self._last_segments, self._speaker_mapping
+        )
+        fmt = self._last_output_format
+        if fmt == "exo":
+            text = exporter.export_exo(segments, settings=self._exo_settings)
+        else:
+            _, _, export_fn = exporter.EXPORTERS[fmt]
+            text = export_fn(segments)
+        return text
+
+    def _segments_response(self):
+        """セグメント編集後の共通レスポンスを構築する。"""
+        text = self._regenerate_output()
+        segments = _apply_speaker_mapping(
+            self._last_segments, self._speaker_mapping
+        )
+        speakers = sorted(set(s.speaker or "Speaker 1" for s in self._last_segments))
+        return {
+            "success": True,
+            "text": text,
+            "segments": [
+                {
+                    "start": s.start,
+                    "end": s.end,
+                    "text": s.text,
+                    "speaker": s.speaker or "Speaker 1",
+                }
+                for s in segments
+            ],
+            "speakers": speakers,
+        }
+
+    def update_segment(self, index: int, speaker: str | None = None,
+                       text: str | None = None,
+                       start: float | None = None, end: float | None = None):
+        """セグメントの話者・テキスト・時刻を更新する。"""
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+        if index < 0 or index >= len(self._last_segments):
+            return {"success": False, "error": "無効なインデックス"}
+
+        seg = self._last_segments[index]
+        self._last_segments[index] = transcriber.TranscriptionSegment(
+            start=start if start is not None else seg.start,
+            end=end if end is not None else seg.end,
+            text=text if text is not None else seg.text,
+            speaker=speaker if speaker is not None else seg.speaker,
+        )
+        return self._segments_response()
+
+    def add_segment(self, start: float, end: float, text: str,
+                    speaker: str = "Speaker 1"):
+        """新しいセグメントを時刻順に挿入する。"""
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+        if start >= end:
+            return {"success": False, "error": "開始時刻は終了時刻より前にしてください"}
+
+        new_seg = transcriber.TranscriptionSegment(
+            start=start, end=end, text=text, speaker=speaker,
+        )
+        # 時刻順に挿入位置を探す
+        insert_idx = 0
+        for i, seg in enumerate(self._last_segments):
+            if seg.start > start:
+                break
+            insert_idx = i + 1
+        self._last_segments.insert(insert_idx, new_seg)
+
+        resp = self._segments_response()
+        resp["inserted_index"] = insert_idx
+        return resp
+
+    def delete_segment(self, index: int):
+        """セグメントを削除する。"""
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+        if index < 0 or index >= len(self._last_segments):
+            return {"success": False, "error": "無効なインデックス"}
+        if len(self._last_segments) <= 1:
+            return {"success": False, "error": "最後のセグメントは削除できません"}
+
+        self._last_segments.pop(index)
+        return self._segments_response()
+
     def get_preview_segments(self, speaker_mapping: dict | None = None):
         """プレビュー用のセグメント一覧を返す（マッピング適用済み）。"""
         if not self._last_segments:

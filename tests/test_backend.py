@@ -907,6 +907,107 @@ class TestApi:
         assert res["data_url"].startswith("data:image/png;base64,")
 
 
+class TestSegmentEditing:
+    """セグメント編集APIのテスト。"""
+
+    def _make_api_with_segments(self):
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        api = Api()
+        api._last_segments = [
+            TranscriptionSegment(start=0.0, end=1.5, text="こんにちは", speaker="Speaker 1"),
+            TranscriptionSegment(start=1.5, end=3.0, text="元気ですか", speaker="Speaker 2"),
+            TranscriptionSegment(start=3.0, end=5.0, text="はい元気です", speaker="Speaker 1"),
+        ]
+        api._last_output_format = "text"
+        return api
+
+    def test_update_segment_text(self):
+        api = self._make_api_with_segments()
+        res = api.update_segment(0, text="さようなら")
+        assert res["success"] is True
+        assert api._last_segments[0].text == "さようなら"
+        assert api._last_segments[0].speaker == "Speaker 1"  # 変更なし
+
+    def test_update_segment_speaker(self):
+        api = self._make_api_with_segments()
+        res = api.update_segment(1, speaker="Speaker 1")
+        assert res["success"] is True
+        assert api._last_segments[1].speaker == "Speaker 1"
+        assert api._last_segments[1].text == "元気ですか"  # 変更なし
+
+    def test_update_segment_time(self):
+        api = self._make_api_with_segments()
+        res = api.update_segment(0, start=0.5, end=2.0)
+        assert res["success"] is True
+        assert api._last_segments[0].start == 0.5
+        assert api._last_segments[0].end == 2.0
+
+    def test_update_segment_invalid_index(self):
+        api = self._make_api_with_segments()
+        res = api.update_segment(99, text="x")
+        assert res["success"] is False
+
+    def test_update_segment_no_data(self):
+        from aviutl_whisper.api import Api
+        api = Api()
+        res = api.update_segment(0, text="x")
+        assert res["success"] is False
+
+    def test_add_segment(self):
+        api = self._make_api_with_segments()
+        res = api.add_segment(2.0, 2.5, "新テキスト", "Speaker 2")
+        assert res["success"] is True
+        assert len(api._last_segments) == 4
+        assert res["inserted_index"] == 2
+        assert api._last_segments[2].text == "新テキスト"
+        assert api._last_segments[2].start == 2.0
+
+    def test_add_segment_at_end(self):
+        api = self._make_api_with_segments()
+        res = api.add_segment(10.0, 12.0, "末尾", "Speaker 1")
+        assert res["success"] is True
+        assert len(api._last_segments) == 4
+        assert res["inserted_index"] == 3
+
+    def test_add_segment_invalid_time(self):
+        api = self._make_api_with_segments()
+        res = api.add_segment(5.0, 3.0, "逆転", "Speaker 1")
+        assert res["success"] is False
+
+    def test_delete_segment(self):
+        api = self._make_api_with_segments()
+        res = api.delete_segment(1)
+        assert res["success"] is True
+        assert len(api._last_segments) == 2
+        assert api._last_segments[0].text == "こんにちは"
+        assert api._last_segments[1].text == "はい元気です"
+
+    def test_delete_last_segment_fails(self):
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        api = Api()
+        api._last_segments = [
+            TranscriptionSegment(start=0.0, end=1.0, text="唯一", speaker="Speaker 1"),
+        ]
+        api._last_output_format = "text"
+        res = api.delete_segment(0)
+        assert res["success"] is False
+
+    def test_delete_invalid_index(self):
+        api = self._make_api_with_segments()
+        res = api.delete_segment(99)
+        assert res["success"] is False
+
+    def test_edit_returns_segments_and_text(self):
+        api = self._make_api_with_segments()
+        res = api.update_segment(0, text="変更後")
+        assert "segments" in res
+        assert "text" in res
+        assert len(res["segments"]) == 3
+        assert res["segments"][0]["text"] == "変更後"
+
+
 # ============================================================
 # speaker mapping テスト
 # ============================================================
