@@ -66,6 +66,20 @@
                         <option value="exo">AviUtl exo (.exo)</option>
                     </select>
                 </div>
+                <div class="setting-item">
+                    <label for="diarization-method">話者分離方式</label>
+                    <select id="diarization-method">
+                        <option value="speechbrain" selected>speechbrain (内蔵)</option>
+                        <option value="pyannote">pyannote (高精度)</option>
+                    </select>
+                </div>
+                <div class="setting-item" id="hf-token-item" style="display: none;">
+                    <label for="hf-token">HuggingFace トークン</label>
+                    <input type="password" id="hf-token" placeholder="hf_xxxxxxxxxxxx">
+                    <small class="hf-token-hint">
+                        <a href="#" id="hf-token-link" title="HuggingFaceでトークンを取得">トークンの取得方法</a>
+                    </small>
+                </div>
             </div>
         </section>
 

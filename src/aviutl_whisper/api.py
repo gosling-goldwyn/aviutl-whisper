@@ -160,6 +160,8 @@ class Api:
         language = settings_dict.get("language")
         num_speakers = settings_dict.get("num_speakers")
         output_format = settings_dict.get("output_format", "text")
+        diarization_method = settings_dict.get("diarization_method", "speechbrain")
+        hf_token = settings_dict.get("hf_token", "")
         self._last_output_format = output_format
 
         # 1. 音声変換
@@ -188,7 +190,7 @@ class Api:
             progress_callback=self._progress_callback,
         )
 
-        # WhisperモデルをGPUから解放 (speechbrainのためにVRAMを確保)
+        # WhisperモデルをGPUから解放 (話者分離のためにVRAMを確保)
         del whisper_model
         try:
             import torch
@@ -200,24 +202,15 @@ class Api:
         if self._cancelled:
             return {"success": False, "error": "キャンセルされました"}
 
-        # 4. 話者分離モデル読み込み
-        self._update_progress(0.6, "話者分離モデルを読み込み中...")
-        speaker_model = models.load_speechbrain_model(
-            progress_callback=self._progress_callback,
-        )
-
-        if self._cancelled:
-            return {"success": False, "error": "キャンセルされました"}
-
-        # 5. 話者分離
-        self._update_progress(0.7, "話者分離中...")
-        segments = diarizer.assign_speakers(
-            model=speaker_model,
-            audio_path=wav_path,
-            segments=result.segments,
-            num_speakers=num_speakers,
-            progress_callback=self._progress_callback,
-        )
+        # 4-5. 話者分離 (方式に応じて分岐)
+        if diarization_method == "pyannote":
+            segments = self._run_pyannote_diarization(
+                wav_path, result.segments, num_speakers, hf_token,
+            )
+        else:
+            segments = self._run_speechbrain_diarization(
+                wav_path, result.segments, num_speakers,
+            )
 
         # 6. 結果フォーマット
         self._update_progress(0.95, "結果を生成中...")
@@ -243,6 +236,64 @@ class Api:
             "language": result.language,
             "speakers": speaker_info,
         }
+
+    def _run_speechbrain_diarization(self, wav_path, segments, num_speakers):
+        """speechbrainによる話者分離。"""
+        self._update_progress(0.6, "話者分離モデル(speechbrain)を読み込み中...")
+        speaker_model = models.load_speechbrain_model(
+            progress_callback=self._progress_callback,
+        )
+        self._update_progress(0.7, "話者分離中...")
+        return diarizer.assign_speakers(
+            model=speaker_model,
+            audio_path=wav_path,
+            segments=segments,
+            num_speakers=num_speakers,
+            progress_callback=self._progress_callback,
+        )
+
+    def _run_pyannote_diarization(self, wav_path, segments, num_speakers, hf_token):
+        """pyannote.audioによる話者分離。"""
+        # 保存済みトークンからのフォールバック
+        if not hf_token:
+            saved = settings.load_settings()
+            encrypted = saved.get("hf_token_encrypted", "")
+            if encrypted:
+                hf_token = settings.decrypt_token(encrypted)
+        if not hf_token:
+            raise ValueError(
+                "pyannoteを使用するにはHuggingFaceトークンが必要です。\n"
+                "設定画面でトークンを入力してください。"
+            )
+
+        self._update_progress(0.6, "話者分離モデル(pyannote)を読み込み中...")
+        try:
+            pipeline = models.load_pyannote_pipeline(
+                hf_token=hf_token,
+                progress_callback=self._progress_callback,
+            )
+        except ImportError as e:
+            raise ImportError(str(e))
+
+        self._update_progress(0.7, "pyannote話者分離中...")
+        result = diarizer.assign_speakers_pyannote(
+            pipeline=pipeline,
+            audio_path=wav_path,
+            segments=segments,
+            num_speakers=num_speakers,
+            progress_callback=self._progress_callback,
+        )
+
+        # パイプラインをGPUから解放
+        del pipeline
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+
+        return result
 
     def save_result(self, format_type: str, exo_settings: dict | None = None,
                     speaker_mapping: dict | None = None):
@@ -432,11 +483,22 @@ class Api:
             self._last_wav_path = None
 
     def load_settings(self):
-        """保存された設定を読み込む。"""
-        return settings.load_settings()
+        """保存された設定を読み込む。HFトークンは復号して返す。"""
+        data = settings.load_settings()
+        # 暗号化されたトークンを復号してフロントエンドに渡す
+        encrypted = data.get("hf_token_encrypted", "")
+        if encrypted:
+            data["hf_token_decrypted"] = settings.decrypt_token(encrypted)
+        return data
 
     def save_settings(self, data: dict):
-        """設定を保存する。"""
+        """設定を保存する。HFトークンは暗号化して保存。"""
+        # フロントエンドから渡されたhf_tokenを暗号化
+        hf_token = data.pop("hf_token", "")
+        if hf_token:
+            data["hf_token_encrypted"] = settings.encrypt_token(hf_token)
+        elif "hf_token_encrypted" not in data:
+            data["hf_token_encrypted"] = ""
         settings.save_settings(data)
         return {"success": True}
 

@@ -1,5 +1,6 @@
 """設定の永続化モジュール - settings.json の読み書き"""
 
+import base64
 import json
 import logging
 import os
@@ -13,6 +14,8 @@ DEFAULT_SETTINGS = {
     "language": "ja",
     "num_speakers": "auto",
     "output_format": "text",
+    "diarization_method": "speechbrain",
+    "hf_token_encrypted": "",
     "exo": {
         "font": "MS UI Gothic",
         "font_size": 34,
@@ -80,3 +83,56 @@ def _deep_merge(defaults: dict, override: dict) -> dict:
         else:
             result[key] = value
     return result
+
+
+def encrypt_token(token: str) -> str:
+    """HuggingFaceトークンをDPAPIで暗号化し、base64文字列として返す。
+
+    Windows: DPAPI (CryptProtectData) でユーザーアカウントに紐づいた暗号化。
+    その他: base64エンコードのみ（難読化レベル）。
+    """
+    if not token:
+        return ""
+
+    if platform.system() == "Windows":
+        try:
+            import win32crypt
+            encrypted = win32crypt.CryptProtectData(
+                token.encode("utf-8"),
+                "aviutl-whisper-hf-token",
+                None, None, None, 0,
+            )
+            return base64.b64encode(encrypted).decode("ascii")
+        except Exception:
+            logger.warning("DPAPI暗号化に失敗、base64フォールバック")
+
+    # フォールバック: base64のみ（最低限の難読化）
+    return "b64:" + base64.b64encode(token.encode("utf-8")).decode("ascii")
+
+
+def decrypt_token(encrypted: str) -> str:
+    """暗号化されたHuggingFaceトークンを復号する。"""
+    if not encrypted:
+        return ""
+
+    # base64フォールバック形式
+    if encrypted.startswith("b64:"):
+        try:
+            return base64.b64decode(encrypted[4:]).decode("utf-8")
+        except Exception:
+            return ""
+
+    # DPAPI暗号化形式
+    if platform.system() == "Windows":
+        try:
+            import win32crypt
+            raw = base64.b64decode(encrypted)
+            _, decrypted = win32crypt.CryptUnprotectData(
+                raw, None, None, None, 0,
+            )
+            return decrypted.decode("utf-8")
+        except Exception:
+            logger.warning("DPAPI復号に失敗")
+            return ""
+
+    return ""

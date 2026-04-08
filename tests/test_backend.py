@@ -277,6 +277,61 @@ class TestDiarizer:
         assert len(windows) == 2
         assert windows[-1] == (2.5, 5.0)
 
+    def test_match_speakers_by_overlap(self):
+        """pyannoteセグメントとの重複マッチングが正しく動作する。"""
+        from aviutl_whisper.diarizer import _match_speakers_by_overlap
+        from aviutl_whisper.transcriber import TranscriptionSegment
+
+        segments = [
+            TranscriptionSegment(start=0.0, end=2.0, text="aaa"),
+            TranscriptionSegment(start=2.0, end=4.0, text="bbb"),
+            TranscriptionSegment(start=4.0, end=6.0, text="ccc"),
+        ]
+        # pyannote: speaker A talks 0-3s, speaker B talks 3-6s
+        pyannote_segs = [
+            (0.0, 3.0, "SPEAKER_00"),
+            (3.0, 6.0, "SPEAKER_01"),
+        ]
+        speaker_map = {"SPEAKER_00": "Speaker 1", "SPEAKER_01": "Speaker 2"}
+        result = _match_speakers_by_overlap(segments, pyannote_segs, speaker_map)
+        assert result[0].speaker == "Speaker 1"  # 0-2s: fully in SPEAKER_00
+        assert result[1].speaker == "Speaker 1"  # 2-4s: 1s overlap with A, 1s with B → tie → first wins
+        assert result[2].speaker == "Speaker 2"  # 4-6s: fully in SPEAKER_01
+
+    def test_match_speakers_by_overlap_no_pyannote(self):
+        """pyannoteセグメントが空の場合、話者はNoneになる。"""
+        from aviutl_whisper.diarizer import _match_speakers_by_overlap
+        from aviutl_whisper.transcriber import TranscriptionSegment
+
+        segments = [
+            TranscriptionSegment(start=0.0, end=2.0, text="test"),
+        ]
+        result = _match_speakers_by_overlap(segments, [], {})
+        assert result[0].speaker is None
+
+    def test_assign_speakers_pyannote_empty(self):
+        """空セグメントリストでpyannote話者分離が正常に返る。"""
+        from aviutl_whisper.diarizer import assign_speakers_pyannote
+        result = assign_speakers_pyannote(pipeline=None, audio_path="", segments=[])
+        assert result == []
+
+    def test_match_speakers_overlap_partial(self):
+        """部分的な重複でも正しい話者が割り当てられる。"""
+        from aviutl_whisper.diarizer import _match_speakers_by_overlap
+        from aviutl_whisper.transcriber import TranscriptionSegment
+
+        segments = [
+            TranscriptionSegment(start=1.0, end=3.0, text="test"),
+        ]
+        # SPEAKER_00: 0-1.5s (0.5s overlap), SPEAKER_01: 1.5-4.0s (1.5s overlap)
+        pyannote_segs = [
+            (0.0, 1.5, "SPEAKER_00"),
+            (1.5, 4.0, "SPEAKER_01"),
+        ]
+        speaker_map = {"SPEAKER_00": "Speaker 1", "SPEAKER_01": "Speaker 2"}
+        result = _match_speakers_by_overlap(segments, pyannote_segs, speaker_map)
+        assert result[0].speaker == "Speaker 2"  # more overlap with SPEAKER_01
+
 
 # ============================================================
 # exporter.py テスト
@@ -937,3 +992,72 @@ class TestSettings:
         assert result["b"]["c"] == 99
         assert result["b"]["d"] == 3
         assert result["e"] == 5
+
+    def test_default_settings_has_diarization_method(self):
+        """デフォルト設定にdiarization_methodが含まれる。"""
+        from aviutl_whisper.settings import DEFAULT_SETTINGS
+        assert "diarization_method" in DEFAULT_SETTINGS
+        assert DEFAULT_SETTINGS["diarization_method"] == "speechbrain"
+
+    def test_default_settings_has_hf_token_encrypted(self):
+        """デフォルト設定にhf_token_encryptedが含まれる。"""
+        from aviutl_whisper.settings import DEFAULT_SETTINGS
+        assert "hf_token_encrypted" in DEFAULT_SETTINGS
+        assert DEFAULT_SETTINGS["hf_token_encrypted"] == ""
+
+    def test_encrypt_decrypt_token_empty(self):
+        """空トークンの暗号化/復号。"""
+        from aviutl_whisper.settings import encrypt_token, decrypt_token
+        assert encrypt_token("") == ""
+        assert decrypt_token("") == ""
+
+    def test_encrypt_decrypt_token_roundtrip(self):
+        """トークンの暗号化→復号ラウンドトリップ。"""
+        from aviutl_whisper.settings import encrypt_token, decrypt_token
+        token = "hf_test_token_12345"
+        encrypted = encrypt_token(token)
+        assert encrypted != ""
+        assert encrypted != token  # 暗号化されている
+        decrypted = decrypt_token(encrypted)
+        assert decrypted == token
+
+    def test_encrypt_token_b64_fallback(self, monkeypatch):
+        """DPAPI不使用時のbase64フォールバック。"""
+        import platform
+        from aviutl_whisper import settings
+        monkeypatch.setattr(platform, "system", lambda: "Linux")
+        token = "hf_fallback_test"
+        encrypted = settings.encrypt_token(token)
+        assert encrypted.startswith("b64:")
+        decrypted = settings.decrypt_token(encrypted)
+        assert decrypted == token
+
+
+# ============================================================
+# pyannote models テスト
+# ============================================================
+
+class TestPyannoteModels:
+    """pyannote関連のモデルロードテスト。"""
+
+    def test_load_pyannote_missing_token(self):
+        """トークンなしでpyannoteロードするとValueError。"""
+        pytest.importorskip("pyannote.audio")
+        from aviutl_whisper.models import load_pyannote_pipeline
+        with pytest.raises(ValueError, match="HuggingFaceトークン"):
+            load_pyannote_pipeline(hf_token="")
+
+    def test_load_pyannote_not_installed(self, monkeypatch):
+        """pyannote未インストール時にImportError。"""
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "pyannote.audio" or name.startswith("pyannote"):
+                raise ImportError("No module named 'pyannote'")
+            return original_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+        from aviutl_whisper.models import load_pyannote_pipeline
+        with pytest.raises(ImportError, match="pyannote.audioがインストールされていません"):
+            load_pyannote_pipeline(hf_token="hf_test_token")

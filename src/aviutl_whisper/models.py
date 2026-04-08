@@ -198,3 +198,47 @@ def _detect_device(model_size: str = "medium") -> tuple[str, str]:
 
     logger.info("CPUモードで実行")
     return "cpu", "int8"
+
+
+def load_pyannote_pipeline(
+    hf_token: str,
+    progress_callback: ProgressCallback | None = None,
+):
+    """pyannote話者分離パイプラインを読み込む。
+
+    pyannote.audioはオプション依存。未インストール時はImportErrorを送出。
+    HuggingFaceのゲート付きモデルのため、有効なトークンが必要。
+    """
+    try:
+        from pyannote.audio import Pipeline
+    except ImportError:
+        raise ImportError(
+            "pyannote.audioがインストールされていません。\n"
+            "インストール: uv pip install pyannote.audio"
+        )
+
+    if not hf_token:
+        raise ValueError("pyannoteを使用するにはHuggingFaceトークンが必要です")
+
+    if progress_callback:
+        progress_callback(0.0, "pyannote話者分離モデルを準備中...")
+
+    logger.info("pyannoteパイプライン読み込み開始")
+    pipeline = Pipeline.from_pretrained(
+        "pyannote/speaker-diarization-3.1",
+        use_auth_token=hf_token,
+    )
+
+    # GPU利用可能ならGPUに移動
+    try:
+        import torch
+        if torch.cuda.is_available():
+            pipeline.to(torch.device("cuda"))
+            logger.info("pyannoteパイプラインをGPUに移動")
+    except Exception:
+        pass
+
+    if progress_callback:
+        progress_callback(1.0, "pyannote話者分離モデル準備完了")
+
+    return pipeline

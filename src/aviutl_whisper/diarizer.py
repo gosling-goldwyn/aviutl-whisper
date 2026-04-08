@@ -267,3 +267,96 @@ def _fill_missing_speakers(segments: list[TranscriptionSegment]) -> None:
     for seg in segments:
         if seg.speaker is None:
             seg.speaker = "Speaker 1"
+
+
+def assign_speakers_pyannote(
+    pipeline,
+    audio_path: str,
+    segments: list[TranscriptionSegment],
+    num_speakers: int | None = None,
+    progress_callback=None,
+) -> list[TranscriptionSegment]:
+    """pyannote.audioパイプラインを使って話者ラベルを割り当てる。
+
+    Args:
+        pipeline: pyannote.audio Pipeline (事前ロード済み)
+        audio_path: WAVファイルパス
+        segments: 文字起こしセグメントのリスト
+        num_speakers: 話者数 (Noneの場合はpyannoteが自動推定)
+        progress_callback: 進捗コールバック
+
+    Returns:
+        話者ラベルが割り当てられたセグメントリスト
+    """
+    if not segments:
+        return segments
+
+    if progress_callback:
+        progress_callback(0.0, "pyannote話者分離開始...")
+
+    # pyannoteでダイアライゼーション実行
+    kwargs = {}
+    if num_speakers is not None:
+        kwargs["num_speakers"] = num_speakers
+
+    logger.info("pyannote diarization開始: audio=%s, num_speakers=%s", audio_path, num_speakers)
+    diarization = pipeline(audio_path, **kwargs)
+
+    if progress_callback:
+        progress_callback(0.5, "話者ラベル割り当て中...")
+
+    # pyannote結果からタイムラインを取得
+    pyannote_segments = []
+    for turn, _, speaker in diarization.itertracks(yield_label=True):
+        pyannote_segments.append((turn.start, turn.end, speaker))
+
+    # pyannoteの話者ラベルを正規化 (SPEAKER_00 → Speaker 1)
+    unique_speakers = sorted(set(s[2] for s in pyannote_segments))
+    speaker_map = {name: f"Speaker {i + 1}" for i, name in enumerate(unique_speakers)}
+
+    # whisperセグメントとpyannoteセグメントの重複マッチング
+    result_segments = _match_speakers_by_overlap(segments, pyannote_segments, speaker_map)
+
+    # 未割当のセグメントを前後から埋める
+    _fill_missing_speakers(result_segments)
+
+    if progress_callback:
+        n_speakers = len(unique_speakers)
+        progress_callback(1.0, f"話者分離完了 ({n_speakers}人検出)")
+
+    logger.info("pyannote話者分離完了: %d人検出", len(unique_speakers))
+    return result_segments
+
+
+def _match_speakers_by_overlap(
+    segments: list[TranscriptionSegment],
+    pyannote_segments: list[tuple[float, float, str]],
+    speaker_map: dict[str, str],
+) -> list[TranscriptionSegment]:
+    """whisperセグメントとpyannoteセグメントを時間重複でマッチングする。
+
+    各whisperセグメントに対して、最も重複時間が長いpyannoteセグメントの話者を割り当てる。
+    """
+    result = []
+    for seg in segments:
+        best_speaker = None
+        best_overlap = 0.0
+
+        for pa_start, pa_end, pa_speaker in pyannote_segments:
+            # 重複区間の計算
+            overlap_start = max(seg.start, pa_start)
+            overlap_end = min(seg.end, pa_end)
+            overlap = max(0.0, overlap_end - overlap_start)
+
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_speaker = speaker_map.get(pa_speaker, pa_speaker)
+
+        result.append(TranscriptionSegment(
+            start=seg.start,
+            end=seg.end,
+            text=seg.text,
+            speaker=best_speaker,
+        ))
+
+    return result

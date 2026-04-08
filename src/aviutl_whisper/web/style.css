@@ -542,3 +542,33 @@ input[type="color"] {
     padding: 4px 8px;
     font-size: 0.82rem;
 }
+
+/* HFトークン */
+.hf-token-hint {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.hf-token-hint a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.hf-token-hint a:hover {
+    text-decoration: underline;
+}
+
+#hf-token {
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px;
+    font-size: 0.9rem;
+    width: 100%;
+}
+
+#hf-token:focus {
+    outline: none;
+    border-color: var(--accent);
+}

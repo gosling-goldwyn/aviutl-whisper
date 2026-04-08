@@ -20,11 +20,13 @@ const DEFAULT_SPEAKER_COLORS = [
 document.addEventListener("DOMContentLoaded", () => {
     initEventListeners();
     $("#output-format").addEventListener("change", updateExoSettingsVisibility);
+    $("#diarization-method").addEventListener("change", updateHfTokenVisibility);
     $("#num-speakers").addEventListener("change", () => {
         renderSpeakerColors();
         renderSpeakerTachie();
     });
     updateExoSettingsVisibility();
+    updateHfTokenVisibility();
     renderSpeakerColors();
     renderSpeakerTachie();
 });
@@ -54,6 +56,16 @@ function updateExoSettingsVisibility() {
         show(exoSection);
     } else {
         hide(exoSection);
+    }
+}
+
+// --- HFトークン欄の表示/非表示 ---
+function updateHfTokenVisibility() {
+    const tokenItem = $("#hf-token-item");
+    if ($("#diarization-method").value === "pyannote") {
+        tokenItem.style.display = "";
+    } else {
+        tokenItem.style.display = "none";
     }
 }
 
@@ -339,6 +351,8 @@ async function startTranscription() {
                 return v === "auto" ? null : parseInt(v);
             })(),
             output_format: $("#output-format").value,
+            diarization_method: $("#diarization-method").value,
+            hf_token: $("#hf-token").value || "",
         };
 
         if (settings.output_format === "exo") {
@@ -554,6 +568,8 @@ async function loadSavedSettings() {
         if (saved.language) $("#language").value = saved.language;
         if (saved.num_speakers) $("#num-speakers").value = saved.num_speakers;
         if (saved.output_format) $("#output-format").value = saved.output_format;
+        if (saved.diarization_method) $("#diarization-method").value = saved.diarization_method;
+        if (saved.hf_token_decrypted) $("#hf-token").value = saved.hf_token_decrypted;
 
         // exo設定の復元
         const exo = saved.exo;
@@ -584,6 +600,7 @@ async function loadSavedSettings() {
 
         // UI更新
         updateExoSettingsVisibility();
+        updateHfTokenVisibility();
         renderSpeakerColors();
 
         // 立ち絵設定の復元
@@ -629,6 +646,8 @@ function collectAllSettings() {
         language: $("#language").value,
         num_speakers: $("#num-speakers").value,
         output_format: $("#output-format").value,
+        diarization_method: $("#diarization-method").value,
+        hf_token: $("#hf-token").value || "",
         exo: collectExoSettings(),
     };
 }
@@ -645,9 +664,10 @@ function scheduleAutoSave() {
 
 function setupAutoSave() {
     // 基本設定
-    for (const id of ["model-size", "language", "num-speakers", "output-format"]) {
+    for (const id of ["model-size", "language", "num-speakers", "output-format", "diarization-method"]) {
         $(`#${id}`).addEventListener("change", () => {
             if (id === "output-format") updateExoSettingsVisibility();
+            if (id === "diarization-method") updateHfTokenVisibility();
             if (id === "num-speakers") {
                 renderSpeakerColors();
                 renderSpeakerTachie();
@@ -655,6 +675,8 @@ function setupAutoSave() {
             scheduleAutoSave();
         });
     }
+    // HFトークン
+    $("#hf-token").addEventListener("change", scheduleAutoSave);
     // exo設定
     const exoInputs = [
         "exo-font", "exo-font-size", "exo-spacing-x", "exo-spacing-y",
