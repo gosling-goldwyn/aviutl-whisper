@@ -54,7 +54,11 @@ m4a, mp3, wav, flac, ogg, aac, wma
 
 3. モデル利用条件の承諾
    - pyannote の話者ダイアライゼーションモデルはゲート付きです。
-   - https://huggingface.co/pyannote/speaker-diarization-3.1 にアクセスし、サインインした上でモデルページの利用条件（Access / Accept）を承諾してください。
+   - 以下の Hugging Face リポジトリは利用前にモデルページで利用条件（Access / Accept）を承諾する必要があります:
+     - https://huggingface.co/pyannote/speaker-diarization-3.1
+     - https://huggingface.co/pyannote/speaker-diarization-community-1
+     - https://huggingface.co/pyannote/segmentation-3.0
+   - 各モデルページにアクセスしてサインインし、「Access」や「I accept」などのボタンで利用条件に同意してください。
 
 4. トークンの登録
    - GUI: 設定で「話者分離方式」を "pyannote" に切り替え、"HuggingFace トークン" 欄に貼り付けて保存します。Windows ではトークンがDPAPIで暗号化されます。
