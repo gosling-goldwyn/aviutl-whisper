@@ -1033,6 +1033,113 @@ class TestSegmentEditing:
         # sounddevice が入っていれば success=True, なければ error
         assert "success" in res
 
+    def test_bake_mapping_on_update(self):
+        """update_segment実行時にマッピングが焼き込まれる。"""
+        api = self._make_api_with_segments()
+        # Speaker 1 → slot 1, Speaker 2 → slot 0 (入れ替え)
+        api._speaker_mapping = {"Speaker 1": 1, "Speaker 2": 0}
+        # マッピング後: seg[0] Speaker 1 → Speaker 2, seg[1] Speaker 2 → Speaker 1
+        res = api.update_segment(0, text="変更テスト")
+        assert res["success"] is True
+        # ベイクイン後、マッピングはNone
+        assert api._speaker_mapping is None
+        # seg[0] は元 Speaker 1 だが、ベイク後 Speaker 2 になっているはず
+        assert api._last_segments[0].speaker == "Speaker 2"
+        assert api._last_segments[0].text == "変更テスト"
+
+    def test_bake_mapping_on_add(self):
+        """add_segment実行時にマッピングが焼き込まれる。"""
+        api = self._make_api_with_segments()
+        api._speaker_mapping = {"Speaker 1": 1, "Speaker 2": 0}
+        res = api.add_segment(2.0, 2.5, "追加", "Speaker 1")
+        assert res["success"] is True
+        assert api._speaker_mapping is None
+
+    def test_bake_mapping_on_delete(self):
+        """delete_segment実行時にマッピングが焼き込まれる。"""
+        api = self._make_api_with_segments()
+        api._speaker_mapping = {"Speaker 1": 1, "Speaker 2": 0}
+        res = api.delete_segment(0)
+        assert res["success"] is True
+        assert api._speaker_mapping is None
+        assert len(api._last_segments) == 2
+
+    def test_bake_mapping_no_mapping(self):
+        """マッピングがNoneの場合はベイクインが何もしない。"""
+        api = self._make_api_with_segments()
+        api._speaker_mapping = None
+        original_speakers = [s.speaker for s in api._last_segments]
+        res = api.update_segment(0, text="テスト")
+        assert res["success"] is True
+        assert [s.speaker for s in api._last_segments if s.text != "テスト"] == original_speakers[1:]
+
+
+class TestSubtitleRendering:
+    """字幕画像レンダリングのテスト。"""
+
+    def test_render_subtitle_image_basic(self):
+        from aviutl_whisper.api import _render_subtitle_image
+        png_bytes = _render_subtitle_image("こんにちは")
+        assert len(png_bytes) > 0
+        # PNG magic bytes
+        assert png_bytes[:4] == b"\x89PNG"
+
+    def test_render_subtitle_image_custom_settings(self):
+        from aviutl_whisper.api import _render_subtitle_image
+        png_bytes = _render_subtitle_image(
+            "テスト字幕",
+            font_size=48,
+            text_color="ff0000",
+            edge_color="0000ff",
+            align=7,  # 下中央
+            soft_edge=True,
+        )
+        assert len(png_bytes) > 0
+        assert png_bytes[:4] == b"\x89PNG"
+
+    def test_render_subtitle_image_multiline(self):
+        from aviutl_whisper.api import _render_subtitle_image
+        png_bytes = _render_subtitle_image(
+            "一行目\n二行目\n三行目",
+            max_chars_per_line=0,
+        )
+        assert len(png_bytes) > 0
+
+    def test_render_subtitle_image_wrap(self):
+        from aviutl_whisper.api import _render_subtitle_image
+        png_bytes = _render_subtitle_image(
+            "あいうえおかきくけこさしすせそ",
+            max_chars_per_line=5,
+        )
+        assert len(png_bytes) > 0
+
+    def test_render_subtitle_api(self):
+        from aviutl_whisper.api import Api
+        api = Api()
+        res = api.render_subtitle_image("テスト", 0, {
+            "font": "MS UI Gothic",
+            "font_size": 34,
+        })
+        assert res["success"] is True
+        assert res["data_url"].startswith("data:image/png;base64,")
+
+    def test_render_subtitle_api_with_colors(self):
+        from aviutl_whisper.api import Api
+        api = Api()
+        res = api.render_subtitle_image("テスト", 1, {
+            "speaker_colors": ["ffffff", "ff0000"],
+            "speaker_edge_colors": ["000000", "00ff00"],
+        })
+        assert res["success"] is True
+
+    def test_resolve_font_path(self):
+        from aviutl_whisper.api import _resolve_font_path
+        # MS Gothic should be resolvable on Windows
+        path = _resolve_font_path("MS Gothic")
+        if path:  # may be None on non-Windows / CI
+            assert os.path.exists(path)
+            assert path.lower().endswith((".ttf", ".ttc", ".otf"))
+
 
 # ============================================================
 # speaker mapping テスト

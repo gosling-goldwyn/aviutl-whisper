@@ -53,6 +53,163 @@ def _get_system_fonts() -> list[str]:
     return sorted(fonts)
 
 
+def _resolve_font_path(font_name: str) -> str | None:
+    """フォント名からフォントファイルパスを解決する。
+
+    Windowsレジストリのフォント登録情報を参照し、フォント名に一致する
+    ファイルパスを返す。見つからない場合は None。
+    """
+    fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    font_key_path = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
+
+    try:
+        import winreg
+    except ImportError:
+        return None
+
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            key = winreg.OpenKey(hive, font_key_path)
+            i = 0
+            while True:
+                try:
+                    reg_name, reg_value, _ = winreg.EnumValue(key, i)
+                    # "MS UI Gothic & MS UI PGothic & MS UI Gothic (TrueType)"
+                    # → 括弧前を取得し、& で分割して各名前を確認
+                    base_name = reg_name.split(" (")[0].strip()
+                    names = [n.strip() for n in base_name.split("&")]
+                    if font_name in names:
+                        # reg_value がフルパスか、ファイル名のみか
+                        if os.path.isabs(reg_value):
+                            path = reg_value
+                        else:
+                            path = os.path.join(fonts_dir, reg_value)
+                        if os.path.exists(path):
+                            winreg.CloseKey(key)
+                            return path
+                    i += 1
+                except OSError:
+                    break
+            winreg.CloseKey(key)
+        except OSError:
+            pass
+
+    return None
+
+
+def _render_subtitle_image(
+    text: str,
+    font_name: str = "MS UI Gothic",
+    font_size: int = 34,
+    bold: bool = False,
+    italic: bool = False,
+    text_color: str = "ffffff",
+    edge_color: str = "000000",
+    soft_edge: bool = True,
+    align: int = 4,
+    pos_x: float = 0,
+    pos_y: float = 0,
+    spacing_y: int = 0,
+    max_chars_per_line: int = 0,
+    width: int = 1920,
+    height: int = 1080,
+) -> bytes:
+    """字幕テキストを透過PNGとしてレンダリングする。
+
+    Returns:
+        PNG画像のバイト列
+    """
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # テキスト折り返し
+    if max_chars_per_line > 0:
+        wrapped_lines = []
+        for line in text.split("\n"):
+            if not line:
+                wrapped_lines.append("")
+                continue
+            for i in range(0, len(line), max_chars_per_line):
+                wrapped_lines.append(line[i:i + max_chars_per_line])
+        lines = wrapped_lines
+    else:
+        lines = text.split("\n")
+
+    # フォント解決
+    font_path = _resolve_font_path(font_name)
+    if not font_path:
+        # フォールバック: msgothic.ttc
+        fallback = os.path.join(
+            os.environ.get("WINDIR", r"C:\Windows"), "Fonts", "msgothic.ttc"
+        )
+        if os.path.exists(fallback):
+            font_path = fallback
+
+    try:
+        font = ImageFont.truetype(font_path or "", font_size)
+    except (OSError, AttributeError):
+        font = ImageFont.load_default()
+
+    # 色パース
+    def parse_hex(h: str) -> tuple[int, int, int, int]:
+        h = h.lstrip("#")
+        if len(h) != 6:
+            h = "ffffff"
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
+
+    fill_color = parse_hex(text_color)
+    stroke_color = parse_hex(edge_color)
+    stroke_width = max(1, font_size // 12) if soft_edge else 0
+
+    line_height = font_size + spacing_y
+    total_text_height = len(lines) * line_height
+
+    # align: 3x3グリッド (0-8)
+    col_align = align % 3   # 0=左, 1=中, 2=右
+    row_align = align // 3  # 0=上, 1=中, 2=下
+
+    padding = 40
+
+    # Y基準位置
+    if row_align == 0:
+        base_y = padding
+    elif row_align == 1:
+        base_y = (height - total_text_height) // 2
+    else:
+        base_y = height - padding - total_text_height
+    base_y += int(pos_y)
+
+    for i, line in enumerate(lines):
+        if not line:
+            continue
+        y = base_y + i * line_height
+
+        # X位置計算
+        bbox = font.getbbox(line)
+        text_w = bbox[2] - bbox[0]
+
+        if col_align == 0:
+            x = padding
+        elif col_align == 1:
+            x = (width - text_w) // 2
+        else:
+            x = width - padding - text_w
+        x += int(pos_x)
+
+        draw.text(
+            (x, y), line, font=font, fill=fill_color,
+            stroke_width=stroke_width, stroke_fill=stroke_color,
+        )
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _apply_speaker_mapping(
     segments: list[transcriber.TranscriptionSegment],
     mapping: dict[str, int] | None,
@@ -541,6 +698,19 @@ class Api:
 
     # --- セグメント編集 ---
 
+    def _bake_mapping(self):
+        """現在のマッピングを _last_segments に焼き込み、マッピングをリセットする。
+
+        セグメント編集操作の前に呼ぶことで、エディタが表示通りの話者名で
+        直接操作できるようにする。
+        """
+        if not self._speaker_mapping or not self._last_segments:
+            return
+        self._last_segments = _apply_speaker_mapping(
+            self._last_segments, self._speaker_mapping
+        )
+        self._speaker_mapping = None
+
     def _regenerate_output(self):
         """現在のセグメントから出力テキストを再生成して返す。"""
         segments = _apply_speaker_mapping(
@@ -582,6 +752,7 @@ class Api:
         """セグメントの話者・テキスト・時刻を更新する。"""
         if not self._last_segments:
             return {"success": False, "error": "結果がありません"}
+        self._bake_mapping()
         if index < 0 or index >= len(self._last_segments):
             return {"success": False, "error": "無効なインデックス"}
 
@@ -601,6 +772,7 @@ class Api:
             return {"success": False, "error": "結果がありません"}
         if start >= end:
             return {"success": False, "error": "開始時刻は終了時刻より前にしてください"}
+        self._bake_mapping()
 
         new_seg = transcriber.TranscriptionSegment(
             start=start, end=end, text=text, speaker=speaker,
@@ -621,6 +793,7 @@ class Api:
         """セグメントを削除する。"""
         if not self._last_segments:
             return {"success": False, "error": "結果がありません"}
+        self._bake_mapping()
         if index < 0 or index >= len(self._last_segments):
             return {"success": False, "error": "無効なインデックス"}
         if len(self._last_segments) <= 1:
@@ -670,6 +843,48 @@ class Api:
             }
         except Exception as e:
             logger.exception("画像読み込みエラー")
+            return {"success": False, "error": str(e)}
+
+    def render_subtitle_image(self, text: str, speaker_index: int = 0,
+                              settings_dict: dict | None = None):
+        """字幕テキストをPillow で透過PNGにレンダリングし、base64で返す。"""
+        import base64
+
+        s = settings_dict or {}
+        colors = s.get("speaker_colors", [])
+        if not colors:
+            colors = ["ffffff", "00ffff", "00ff00", "ff00ff",
+                      "ffff00", "ff8000", "8080ff", "80ff80"]
+        edge_colors = s.get("speaker_edge_colors", [])
+        if not edge_colors:
+            edge_colors = ["000000"]
+
+        text_color = colors[speaker_index % len(colors)]
+        edge_color = edge_colors[speaker_index % len(edge_colors)]
+
+        try:
+            png_bytes = _render_subtitle_image(
+                text=text,
+                font_name=s.get("font", "MS UI Gothic"),
+                font_size=s.get("font_size", 34),
+                bold=s.get("bold", False),
+                italic=s.get("italic", False),
+                text_color=text_color,
+                edge_color=edge_color,
+                soft_edge=s.get("soft_edge", True),
+                align=s.get("align", 4),
+                pos_x=s.get("pos_x", 0),
+                pos_y=s.get("pos_y", 0),
+                spacing_y=s.get("spacing_y", 0),
+                max_chars_per_line=s.get("max_chars_per_line", 0),
+            )
+            data = base64.b64encode(png_bytes).decode("ascii")
+            return {
+                "success": True,
+                "data_url": f"data:image/png;base64,{data}",
+            }
+        except Exception as e:
+            logger.exception("字幕レンダリングエラー")
             return {"success": False, "error": str(e)}
 
     def _update_progress(self, progress: float, message: str):

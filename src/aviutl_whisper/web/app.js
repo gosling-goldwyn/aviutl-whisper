@@ -851,7 +851,6 @@ function drawPreviewFrame() {
 
     // クリア
     ctx.clearRect(0, 0, W, H);
-    $("#subtitle-overlay").innerHTML = "";
 
     // 1. 背景
     drawBackground(ctx, W, H);
@@ -862,7 +861,7 @@ function drawPreviewFrame() {
         drawTachie(ctx, W, H, seg.speaker);
     }
 
-    // 3. 字幕テキスト（HTMLオーバーレイ）
+    // 3. 字幕テキスト（Pillow画像）
     if (previewSegments.length > 0) {
         const seg = previewSegments[previewIndex];
         drawSubtitle(ctx, W, H, seg);
@@ -915,107 +914,70 @@ function drawTachie(ctx, W, H, activeSpeaker) {
     }
 }
 
-function drawSubtitle(ctx, W, H, seg) {
-    // Canvas fillTextではなくHTMLオーバーレイで字幕を描画
-    const overlay = $("#subtitle-overlay");
-    const container = overlay.parentElement;
-    overlay.innerHTML = "";
+// 字幕画像キャッシュ: key = "idx:text:speaker" + settings hash → Image
+let subtitleImageCache = {};
+let subtitleCacheSettings = "";
 
-    const settings = collectExoSettings();
-    const spkIdx = getSpeakerIndex(seg.speaker);
-    const colors = (settings.speaker_colors && settings.speaker_colors.length > 0)
-        ? settings.speaker_colors : DEFAULT_SPEAKER_COLORS;
-    const textColor = "#" + (colors[spkIdx % colors.length] || "ffffff");
-    const edgeColors = (settings.speaker_edge_colors && settings.speaker_edge_colors.length > 0)
-        ? settings.speaker_edge_colors : ["000000"];
-    const edgeColor = "#" + (edgeColors[spkIdx % edgeColors.length] || "000000");
-
-    const fontSize = settings.font_size || 34;
-    const fontName = settings.font || "MS UI Gothic";
-    const bold = settings.bold ? "bold" : "normal";
-    const italic = settings.italic ? "italic" : "normal";
-
-    // テキスト折り返し
-    const maxChars = settings.max_chars_per_line || 0;
-    const text = maxChars > 0 ? wrapText(seg.text, maxChars) : seg.text;
-    const lines = text.split("\n");
-
-    const spacingY = settings.spacing_y || 0;
-
-    // コンテナの実サイズを取得してスケール計算
-    const cRect = container.getBoundingClientRect();
-    const scaleX = cRect.width / W;
-    const scaleY = cRect.height / H;
-
-    const fontSizePx = fontSize * scaleY;
-    const lineHeightPx = (fontSize + spacingY) * scaleY;
-    const totalHeightPx = lines.length * lineHeightPx;
-    const edgeWidth = settings.soft_edge ? Math.max(1, Math.round(fontSizePx / 12)) : 0;
-    const paddingPx = 40 * scaleY;
-
-    // 寄せ方向 (align: 0-8, 3x3グリッド)
-    const align = settings.align != null ? settings.align : 4;
-    const colAlign = align % 3;  // 0=左, 1=中, 2=右
-    const rowAlign = Math.floor(align / 3);  // 0=上, 1=中, 2=下
-
-    // Y位置
-    let topPx;
-    if (rowAlign === 0) topPx = paddingPx;
-    else if (rowAlign === 1) topPx = (cRect.height - totalHeightPx) / 2;
-    else topPx = cRect.height - paddingPx - totalHeightPx;
-    topPx += (settings.pos_y || 0) * scaleY;
-
-    // X位置
-    let leftPx;
-    if (colAlign === 0) leftPx = paddingPx;
-    else if (colAlign === 1) leftPx = cRect.width / 2;
-    else leftPx = cRect.width - paddingPx;
-    leftPx += (settings.pos_x || 0) * scaleX;
-
-    // CSS transform で寄せを実現
-    let transform = "";
-    if (colAlign === 1) transform = "translateX(-50%)";
-    else if (colAlign === 2) transform = "translateX(-100%)";
-
-    for (let i = 0; i < lines.length; i++) {
-        const lineDiv = document.createElement("div");
-        lineDiv.className = "subtitle-line";
-        lineDiv.textContent = lines[i];
-
-        const yPx = topPx + i * lineHeightPx;
-
-        lineDiv.style.cssText = [
-            `left: ${leftPx}px`,
-            `top: ${yPx}px`,
-            `font-size: ${fontSizePx}px`,
-            `font-family: "${fontName}", "Yu Gothic", "Meiryo", sans-serif`,
-            `font-weight: ${bold}`,
-            `font-style: ${italic}`,
-            `color: ${textColor}`,
-            `transform: ${transform}`,
-            edgeWidth > 0
-                ? `-webkit-text-stroke: ${edgeWidth}px ${edgeColor}; paint-order: stroke fill`
-                : "",
-        ].join("; ");
-
-        overlay.appendChild(lineDiv);
-    }
+function getSubtitleCacheKey(seg) {
+    return `${seg.text}|${seg.speaker}`;
 }
 
-function wrapText(text, maxChars) {
-    if (!maxChars || maxChars <= 0) return text;
-    const result = [];
-    for (const line of text.split("\n")) {
-        for (let i = 0; i < line.length; i += maxChars) {
-            result.push(line.substring(i, i + maxChars));
-        }
-        if (line.length === 0) result.push("");
+function getSettingsHash() {
+    const s = collectExoSettings();
+    return JSON.stringify([
+        s.font, s.font_size, s.bold, s.italic, s.soft_edge,
+        s.align, s.pos_x, s.pos_y, s.spacing_y, s.max_chars_per_line,
+        s.speaker_colors, s.speaker_edge_colors,
+    ]);
+}
+
+function invalidateSubtitleCache() {
+    subtitleImageCache = {};
+    subtitleCacheSettings = "";
+}
+
+async function drawSubtitle(ctx, W, H, seg) {
+    const settings = collectExoSettings();
+    const spkIdx = getSpeakerIndex(seg.speaker);
+
+    // 設定変更時にキャッシュ無効化
+    const settingsHash = getSettingsHash();
+    if (settingsHash !== subtitleCacheSettings) {
+        subtitleImageCache = {};
+        subtitleCacheSettings = settingsHash;
     }
-    return result.join("\n");
+
+    const cacheKey = getSubtitleCacheKey(seg);
+
+    if (subtitleImageCache[cacheKey]) {
+        ctx.drawImage(subtitleImageCache[cacheKey], 0, 0, W, H);
+        return;
+    }
+
+    try {
+        const res = await pywebview.api.render_subtitle_image(
+            seg.text, spkIdx, settings
+        );
+        if (!res || !res.success) return;
+
+        const img = new Image();
+        img.onload = () => {
+            subtitleImageCache[cacheKey] = img;
+            // 背景と立ち絵を再描画してから字幕を重ねる
+            ctx.clearRect(0, 0, W, H);
+            drawBackground(ctx, W, H);
+            drawTachie(ctx, W, H, seg.speaker);
+            ctx.drawImage(img, 0, 0, W, H);
+        };
+        img.src = res.data_url;
+    } catch (e) {
+        console.error("字幕レンダリングエラー:", e);
+    }
 }
 
 function schedulePreviewRedraw() {
     if ($("#exo-preview-area").classList.contains("hidden")) return;
+    invalidateSubtitleCache();
     drawPreviewFrame();
 }
 
