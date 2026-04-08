@@ -187,6 +187,18 @@
                 <div id="speaker-mapping-list"></div>
                 <button id="btn-swap-speakers" class="btn btn-swap hidden">🔄 話者を入れ替え</button>
             </div>
+            <div id="exo-preview-area" class="exo-preview-area hidden">
+                <h3>🖥️ シーンプレビュー</h3>
+                <div class="preview-container">
+                    <canvas id="preview-canvas" width="1920" height="1080"></canvas>
+                </div>
+                <div class="preview-nav">
+                    <button id="btn-prev-seg" class="btn btn-nav" title="前のセグメント">◀</button>
+                    <span id="preview-seg-info" class="preview-seg-info">- / -</span>
+                    <button id="btn-next-seg" class="btn btn-nav" title="次のセグメント">▶</button>
+                </div>
+                <div id="preview-seg-detail" class="preview-seg-detail"></div>
+            </div>
             <div class="result-preview">
                 <textarea id="result-text" readonly></textarea>
             </div>

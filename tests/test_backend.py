@@ -861,6 +861,51 @@ class TestApi:
         assert "progress" in progress
         assert "message" in progress
 
+    def test_get_preview_segments_no_result(self):
+        """結果がない場合はエラーを返す。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        res = api.get_preview_segments()
+        assert res["success"] is False
+
+    def test_get_preview_segments_with_data(self):
+        """セグメントデータがある場合は正しく返す。"""
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        api = Api()
+        api._last_segments = [
+            TranscriptionSegment(start=0.0, end=1.5, text="こんにちは", speaker="Speaker 1"),
+            TranscriptionSegment(start=1.5, end=3.0, text="元気ですか", speaker="Speaker 2"),
+        ]
+        res = api.get_preview_segments()
+        assert res["success"] is True
+        assert len(res["segments"]) == 2
+        assert res["segments"][0]["text"] == "こんにちは"
+        assert res["segments"][0]["speaker"] == "Speaker 1"
+        assert res["segments"][1]["start"] == 1.5
+
+    def test_get_image_base64_missing(self):
+        """存在しないファイルはエラーを返す。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        res = api.get_image_base64("nonexistent.png")
+        assert res["success"] is False
+
+    def test_get_image_base64_valid(self, tmp_path):
+        """画像ファイルをbase64で返す。"""
+        from aviutl_whisper.api import Api
+        # 1x1 PNG
+        import base64
+        png_data = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        )
+        img_path = tmp_path / "test.png"
+        img_path.write_bytes(png_data)
+        api = Api()
+        res = api.get_image_base64(str(img_path))
+        assert res["success"] is True
+        assert res["data_url"].startswith("data:image/png;base64,")
+
 
 # ============================================================
 # speaker mapping テスト

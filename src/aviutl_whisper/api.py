@@ -502,6 +502,49 @@ class Api:
         settings.save_settings(data)
         return {"success": True}
 
+    def get_preview_segments(self, speaker_mapping: dict | None = None):
+        """プレビュー用のセグメント一覧を返す（マッピング適用済み）。"""
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+
+        mapping = speaker_mapping or self._speaker_mapping
+        segments = _apply_speaker_mapping(self._last_segments, mapping)
+
+        return {
+            "success": True,
+            "segments": [
+                {
+                    "start": s.start,
+                    "end": s.end,
+                    "text": s.text,
+                    "speaker": s.speaker or "Speaker 1",
+                }
+                for s in segments
+            ],
+        }
+
+    def get_image_base64(self, file_path: str):
+        """ローカル画像ファイルをbase64エンコードして返す。"""
+        import base64
+        import mimetypes
+
+        if not file_path or not os.path.exists(file_path):
+            return {"success": False, "error": "ファイルが見つかりません"}
+
+        try:
+            mime, _ = mimetypes.guess_type(file_path)
+            if mime is None:
+                mime = "image/png"
+            with open(file_path, "rb") as f:
+                data = base64.b64encode(f.read()).decode("ascii")
+            return {
+                "success": True,
+                "data_url": f"data:{mime};base64,{data}",
+            }
+        except Exception as e:
+            logger.exception("画像読み込みエラー")
+            return {"success": False, "error": str(e)}
+
     def _update_progress(self, progress: float, message: str):
         self._progress = {"progress": progress, "message": message}
 

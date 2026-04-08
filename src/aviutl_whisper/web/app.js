@@ -47,6 +47,16 @@ function initEventListeners() {
     $("#btn-copy").addEventListener("click", copyResult);
     $("#btn-bg-image").addEventListener("click", selectBackgroundImage);
     $("#btn-bg-image-clear").addEventListener("click", clearBackgroundImage);
+    $("#btn-prev-seg").addEventListener("click", () => navigatePreview(-1));
+    $("#btn-next-seg").addEventListener("click", () => navigatePreview(1));
+
+    // キーボードナビゲーション（矢印キー）
+    document.addEventListener("keydown", (e) => {
+        if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+        if ($("#exo-preview-area").classList.contains("hidden")) return;
+        if (e.key === "ArrowLeft") { navigatePreview(-1); e.preventDefault(); }
+        if (e.key === "ArrowRight") { navigatePreview(1); e.preventDefault(); }
+    });
 }
 
 // --- exo設定パネルの表示/非表示 ---
@@ -54,8 +64,15 @@ function updateExoSettingsVisibility() {
     const exoSection = $("#exo-settings-section");
     if ($("#output-format").value === "exo") {
         show(exoSection);
+        // 結果がある場合はプレビューも表示
+        if (previewSegments.length > 0) {
+            show($("#exo-preview-area"));
+            drawPreviewFrame();
+            updatePreviewNav();
+        }
     } else {
         hide(exoSection);
+        hide($("#exo-preview-area"));
     }
 }
 
@@ -236,6 +253,8 @@ async function selectTachieImage(speakerIndex) {
             const label = document.querySelector(`.tachie-file-name[data-index="${speakerIndex}"]`);
             if (label) label.textContent = path.split(/[\\/]/).pop();
             scheduleAutoSave();
+            await loadImageCached(path);
+            schedulePreviewRedraw();
         }
     } catch (e) {
         console.error("画像選択エラー:", e);
@@ -287,6 +306,9 @@ async function selectBackgroundImage() {
             const name = result.split(/[\\/]/).pop();
             $("#bg-image-name").textContent = name;
             autoSave();
+            // プレビュー用に画像をキャッシュして再描画
+            await loadImageCached(result);
+            schedulePreviewRedraw();
         }
     } catch (e) {
         console.error("背景画像選択エラー:", e);
@@ -297,6 +319,7 @@ function clearBackgroundImage() {
     backgroundImage = "";
     $("#bg-image-name").textContent = "未選択";
     autoSave();
+    schedulePreviewRedraw();
 }
 
 // --- ファイル選択 ---
@@ -405,6 +428,13 @@ function showResult(result) {
         show($("#speaker-mapping-area"));
     } else {
         hide($("#speaker-mapping-area"));
+    }
+
+    // exoプレビュー
+    if ($("#output-format").value === "exo") {
+        initExoPreview();
+    } else {
+        hide($("#exo-preview-area"));
     }
 }
 
@@ -527,6 +557,8 @@ async function applyMapping() {
         if (result && result.success) {
             $("#result-text").value = result.text;
         }
+        // マッピング変更後にプレビュー再読み込み
+        if (format === "exo") initExoPreview();
     } catch (e) {
         console.error("マッピング変更エラー:", e);
     }
@@ -681,17 +713,18 @@ function setupAutoSave() {
     const exoInputs = [
         "exo-font", "exo-font-size", "exo-spacing-x", "exo-spacing-y",
         "exo-display-speed", "exo-align", "exo-pos-x", "exo-pos-y",
+        "exo-max-chars",
     ];
     for (const id of exoInputs) {
-        $(`#${id}`).addEventListener("change", scheduleAutoSave);
+        $(`#${id}`).addEventListener("change", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
     }
     for (const id of ["exo-bold", "exo-italic", "exo-soft-edge"]) {
-        $(`#${id}`).addEventListener("change", scheduleAutoSave);
+        $(`#${id}`).addEventListener("change", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
     }
     // 話者色は動的なのでcontainerに委任
-    $("#speaker-colors-list").addEventListener("input", scheduleAutoSave);
+    $("#speaker-colors-list").addEventListener("input", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
     // 立ち絵設定も動的
-    $("#speaker-tachie-list").addEventListener("input", scheduleAutoSave);
+    $("#speaker-tachie-list").addEventListener("input", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
 }
 
 // --- ユーティリティ ---
@@ -700,4 +733,255 @@ function formatBytes(bytes) {
     if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
     if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + " MB";
     return (bytes / 1073741824).toFixed(2) + " GB";
+}
+
+// ============================================================
+// exo シーンプレビュー
+// ============================================================
+
+let previewSegments = [];
+let previewIndex = 0;
+const previewImageCache = {};  // path → Image
+
+async function initExoPreview() {
+    const area = $("#exo-preview-area");
+    try {
+        const mapping = Object.keys(currentMapping).length > 0 ? currentMapping : null;
+        const res = await pywebview.api.get_preview_segments(mapping);
+        if (!res || !res.success) {
+            hide(area);
+            return;
+        }
+        previewSegments = res.segments;
+        previewIndex = 0;
+        show(area);
+        await preloadPreviewImages();
+        drawPreviewFrame();
+        updatePreviewNav();
+    } catch (e) {
+        console.error("プレビュー初期化エラー:", e);
+        hide(area);
+    }
+}
+
+async function preloadPreviewImages() {
+    const paths = new Set();
+    if (backgroundImage) paths.add(backgroundImage);
+    for (const td of tachieData) {
+        if (td.file) paths.add(td.file);
+    }
+    const promises = [...paths].map(p => loadImageCached(p));
+    await Promise.allSettled(promises);
+}
+
+async function loadImageCached(filePath) {
+    if (previewImageCache[filePath]) return previewImageCache[filePath];
+    try {
+        const res = await pywebview.api.get_image_base64(filePath);
+        if (!res || !res.success) return null;
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                previewImageCache[filePath] = img;
+                resolve(img);
+            };
+            img.onerror = () => resolve(null);
+            img.src = res.data_url;
+        });
+    } catch (e) {
+        return null;
+    }
+}
+
+function navigatePreview(delta) {
+    const newIdx = previewIndex + delta;
+    if (newIdx < 0 || newIdx >= previewSegments.length) return;
+    previewIndex = newIdx;
+    drawPreviewFrame();
+    updatePreviewNav();
+}
+
+function updatePreviewNav() {
+    const total = previewSegments.length;
+    const idx = previewIndex;
+    $("#preview-seg-info").textContent = `${idx + 1} / ${total}`;
+    $("#btn-prev-seg").disabled = idx <= 0;
+    $("#btn-next-seg").disabled = idx >= total - 1;
+
+    if (total > 0 && previewSegments[idx]) {
+        const seg = previewSegments[idx];
+        const startStr = formatTime(seg.start);
+        const endStr = formatTime(seg.end);
+        const colors = exoDefaults?.speaker_colors || DEFAULT_SPEAKER_COLORS;
+        const spkIdx = getSpeakerIndex(seg.speaker);
+        const color = colors[spkIdx % colors.length];
+        $("#preview-seg-detail").innerHTML =
+            `<span style="color:#${color}">●</span> ${seg.speaker} ` +
+            `<span style="color:var(--text-muted)">[${startStr} → ${endStr}]</span> ` +
+            `${seg.text.substring(0, 60)}${seg.text.length > 60 ? "…" : ""}`;
+    } else {
+        $("#preview-seg-detail").textContent = "";
+    }
+}
+
+function formatTime(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function getSpeakerIndex(speakerName) {
+    // "Speaker N" → N-1 (0-based)
+    const match = speakerName?.match(/Speaker (\d+)/);
+    return match ? parseInt(match[1]) - 1 : 0;
+}
+
+function drawPreviewFrame() {
+    const canvas = $("#preview-canvas");
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // クリア
+    ctx.clearRect(0, 0, W, H);
+
+    // 1. 背景
+    drawBackground(ctx, W, H);
+
+    // 2. 立ち絵
+    if (previewSegments.length > 0) {
+        const seg = previewSegments[previewIndex];
+        drawTachie(ctx, W, H, seg.speaker);
+    }
+
+    // 3. 字幕テキスト
+    if (previewSegments.length > 0) {
+        const seg = previewSegments[previewIndex];
+        drawSubtitle(ctx, W, H, seg);
+    }
+}
+
+function drawBackground(ctx, W, H) {
+    // 黒背景
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, W, H);
+
+    // 背景画像
+    if (backgroundImage && previewImageCache[backgroundImage]) {
+        const img = previewImageCache[backgroundImage];
+        // アスペクト比を維持してフィット（cover）
+        const scale = Math.max(W / img.width, H / img.height);
+        const dw = img.width * scale;
+        const dh = img.height * scale;
+        ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    }
+}
+
+function drawTachie(ctx, W, H, activeSpeaker) {
+    const numValue = $("#num-speakers").value;
+    const numSpeakers = numValue === "auto" ? 2 : parseInt(numValue);
+
+    for (let i = 0; i < numSpeakers; i++) {
+        const td = tachieData[i];
+        if (!td || !td.file || !previewImageCache[td.file]) continue;
+
+        const img = previewImageCache[td.file];
+        const speakerName = `Speaker ${i + 1}`;
+        const isActive = speakerName === activeSpeaker;
+        const scale = (td.scale || 100) / 100;
+        const dw = img.width * scale;
+        const dh = img.height * scale;
+        // AviUtlの座標系: 画面中央が(0,0)
+        const dx = (W / 2) + (td.x || 0) - dw / 2;
+        const dy = (H / 2) + (td.y || 0) - dh / 2;
+
+        if (!isActive) {
+            // グレースケール: オフスクリーンCanvasで彩度0を表現
+            ctx.save();
+            ctx.filter = "grayscale(100%)";
+            ctx.drawImage(img, dx, dy, dw, dh);
+            ctx.restore();
+        } else {
+            ctx.drawImage(img, dx, dy, dw, dh);
+        }
+    }
+}
+
+function drawSubtitle(ctx, W, H, seg) {
+    const settings = collectExoSettings();
+    const spkIdx = getSpeakerIndex(seg.speaker);
+    const colors = settings.speaker_colors || DEFAULT_SPEAKER_COLORS;
+    const textColor = "#" + (colors[spkIdx % colors.length] || "ffffff");
+    const edgeColors = settings.speaker_edge_colors || [];
+    const edgeColor = "#" + (edgeColors[spkIdx % (edgeColors.length || 1)] || "000000");
+
+    const fontSize = settings.font_size || 34;
+    const fontName = settings.font || "MS UI Gothic";
+    const bold = settings.bold ? "bold " : "";
+    const italic = settings.italic ? "italic " : "";
+    ctx.font = `${italic}${bold}${fontSize}px "${fontName}", sans-serif`;
+
+    // テキスト折り返し
+    const maxChars = settings.max_chars_per_line || 0;
+    const text = maxChars > 0 ? wrapText(seg.text, maxChars) : seg.text;
+    const lines = text.split("\n");
+
+    const lineHeight = fontSize + (settings.spacing_y || 0);
+    const totalTextHeight = lines.length * lineHeight;
+
+    // 寄せ方向 (align: 0-8, 3x3グリッド)
+    const align = settings.align != null ? settings.align : 4;
+    const colAlign = align % 3;  // 0=左, 1=中, 2=右
+    const rowAlign = Math.floor(align / 3);  // 0=上, 1=中, 2=下
+
+    ctx.textAlign = colAlign === 0 ? "left" : colAlign === 1 ? "center" : "right";
+
+    // X基準点
+    let baseX;
+    if (colAlign === 0) baseX = 40;
+    else if (colAlign === 1) baseX = W / 2;
+    else baseX = W - 40;
+    baseX += (settings.pos_x || 0);
+
+    // Y基準点
+    let baseY;
+    if (rowAlign === 0) baseY = 40 + fontSize;
+    else if (rowAlign === 1) baseY = (H - totalTextHeight) / 2 + fontSize;
+    else baseY = H - 40 - totalTextHeight + fontSize;
+    baseY += (settings.pos_y || 0);
+
+    // 描画
+    for (let i = 0; i < lines.length; i++) {
+        const y = baseY + i * lineHeight;
+        const line = lines[i];
+
+        // 縁取り
+        if (settings.soft_edge) {
+            ctx.strokeStyle = edgeColor;
+            ctx.lineWidth = Math.max(2, fontSize / 8);
+            ctx.lineJoin = "round";
+            ctx.strokeText(line, baseX, y);
+        }
+
+        // テキスト本体
+        ctx.fillStyle = textColor;
+        ctx.fillText(line, baseX, y);
+    }
+}
+
+function wrapText(text, maxChars) {
+    if (!maxChars || maxChars <= 0) return text;
+    const result = [];
+    for (const line of text.split("\n")) {
+        for (let i = 0; i < line.length; i += maxChars) {
+            result.push(line.substring(i, i + maxChars));
+        }
+        if (line.length === 0) result.push("");
+    }
+    return result.join("\n");
+}
+
+function schedulePreviewRedraw() {
+    if ($("#exo-preview-area").classList.contains("hidden")) return;
+    drawPreviewFrame();
 }
