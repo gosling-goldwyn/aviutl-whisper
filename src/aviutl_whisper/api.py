@@ -172,16 +172,17 @@ def _render_subtitle_image(
     col_align = align % 3   # 0=左, 1=中, 2=右
     row_align = align // 3  # 0=上, 1=中, 2=下
 
-    padding = 40
+    # AviUtl座標系: 画面中央が(0,0)。pos_x/pos_yはアンカーポイント。
+    anchor_x = width / 2 + pos_x
+    anchor_y = height / 2 + pos_y
 
-    # Y基準位置
+    # Y基準位置（アライメントでアンカーからの配置方向を決定）
     if row_align == 0:
-        base_y = padding
+        base_y = int(anchor_y)
     elif row_align == 1:
-        base_y = (height - total_text_height) // 2
+        base_y = int(anchor_y - total_text_height / 2)
     else:
-        base_y = height - padding - total_text_height
-    base_y += int(pos_y)
+        base_y = int(anchor_y - total_text_height)
 
     for i, line in enumerate(lines):
         if not line:
@@ -193,12 +194,11 @@ def _render_subtitle_image(
         text_w = bbox[2] - bbox[0]
 
         if col_align == 0:
-            x = padding
+            x = int(anchor_x)
         elif col_align == 1:
-            x = (width - text_w) // 2
+            x = int(anchor_x - text_w / 2)
         else:
-            x = width - padding - text_w
-        x += int(pos_x)
+            x = int(anchor_x - text_w)
 
         draw.text(
             (x, y), line, font=font, fill=fill_color,
@@ -1021,7 +1021,7 @@ class Api:
         seg = segments[index]
         s = settings_dict or {}
 
-        # 話者インデックスを解算出
+        # 話者インデックスを算出
         import re
         match = re.match(r"Speaker (\d+)", seg.speaker or "Speaker 1")
         speaker_idx = (int(match.group(1)) - 1) if match else 0

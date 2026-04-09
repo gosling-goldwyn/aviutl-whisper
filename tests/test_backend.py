@@ -1560,3 +1560,62 @@ class TestPreviewFrameRendering:
         finally:
             os.unlink(bg_path)
             os.unlink(tachie_path)
+
+    def test_subtitle_visible_with_bottom_align_and_large_pos_y(self):
+        """下揃え + 大きなpos_yでも字幕が画面内に描画されることを確認。
+
+        AviUtl座標系: pos_y=480は画面中央(540)+480=1020pxの位置。
+        align=7(下中央)の場合、テキストブロックの下端がy=1020付近に来るべき。
+        """
+        from aviutl_whisper.api import _render_preview_frame
+
+        settings = {
+            **self.BASE_SETTINGS,
+            "font_size": 80,
+            "align": 7,  # 下中央
+            "pos_x": 0,
+            "pos_y": 480,
+            "max_chars_per_line": 20,
+        }
+        frame_with = _render_preview_frame(
+            text="テスト字幕の長いテキストが複数行になるケース",
+            speaker_index=0,
+            settings=settings,
+            width=1920, height=1080,
+        )
+        frame_without = _render_preview_frame(
+            text="",
+            speaker_index=0,
+            settings=settings,
+            width=1920, height=1080,
+        )
+
+        arr_with = self._jpeg_to_array(frame_with)
+        arr_without = self._jpeg_to_array(frame_without)
+
+        assert not np.array_equal(arr_with, arr_without), \
+            "align=7, pos_y=480で字幕が描画されていない（画面外に出ている可能性）"
+
+    def test_subtitle_pos_y_aviutl_coordinates(self):
+        """AviUtl座標系(中央=0)でのpos_yが正しく反映されることを確認。"""
+        from io import BytesIO
+
+        from aviutl_whisper.api import _render_subtitle_image
+        from PIL import Image
+
+        # pos_y=0（画面中央）で描画→中央付近にピクセルがあるはず
+        png = _render_subtitle_image(
+            text="TEST",
+            font_size=60,
+            align=4,  # 中央
+            pos_x=0,
+            pos_y=0,
+            width=640, height=360,
+        )
+        img = Image.open(BytesIO(png))
+        arr = np.array(img)
+        mid_y = 360 // 2
+        # 中央±50pxの範囲にアルファ非ゼロピクセルがあることを確認
+        center_band = arr[mid_y - 50:mid_y + 50, :, 3]
+        assert center_band.max() > 0, \
+            "pos_y=0, align=中央なのに画面中央付近に字幕がない"
