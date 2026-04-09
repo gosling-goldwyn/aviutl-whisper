@@ -572,3 +572,153 @@ input[type="color"] {
     outline: none;
     border-color: var(--accent);
 }
+
+/* シーンプレビュー */
+.exo-preview-area {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.exo-preview-area h3 {
+    margin-bottom: 10px;
+}
+
+.preview-container {
+    background: #000;
+    border-radius: var(--radius);
+    overflow: hidden;
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+}
+
+.preview-container .preview-image {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+}
+
+.preview-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-top: 10px;
+}
+
+.btn-nav {
+    padding: 6px 16px;
+    font-size: 1.1rem;
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    cursor: pointer;
+}
+
+.btn-nav:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.btn-nav:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.preview-seg-info {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    min-width: 80px;
+    text-align: center;
+}
+
+.preview-seg-detail {
+    margin-top: 6px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+/* --- セグメント編集パネル --- */
+.seg-editor {
+    margin-top: 12px;
+    padding: 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.seg-editor-row {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 8px;
+    align-items: flex-end;
+}
+
+.seg-editor-row:last-child {
+    margin-bottom: 0;
+}
+
+.seg-editor-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.seg-editor-field label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.seg-editor-field.seg-editor-time {
+    width: 90px;
+    flex-shrink: 0;
+}
+
+.seg-editor-field.seg-editor-text-field {
+    flex: 1;
+}
+
+.seg-edit-input {
+    padding: 5px 8px;
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.85rem;
+}
+
+.seg-edit-input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.seg-edit-textarea {
+    resize: vertical;
+    min-height: 40px;
+    font-family: inherit;
+}
+
+.seg-editor-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.btn-small {
+    padding: 4px 12px;
+    font-size: 0.82rem;
+}
+
+.btn-danger {
+    color: #ff6b6b;
+    border-color: #ff6b6b44;
+}
+
+.btn-danger:hover {
+    background: #ff6b6b22;
+    border-color: #ff6b6b;
+}

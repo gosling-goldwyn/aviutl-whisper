@@ -53,6 +53,278 @@ def _get_system_fonts() -> list[str]:
     return sorted(fonts)
 
 
+def _resolve_font_path(font_name: str) -> str | None:
+    """フォント名からフォントファイルパスを解決する。
+
+    Windowsレジストリのフォント登録情報を参照し、フォント名に一致する
+    ファイルパスを返す。見つからない場合は None。
+    """
+    fonts_dir = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+    font_key_path = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
+
+    try:
+        import winreg
+    except ImportError:
+        return None
+
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            key = winreg.OpenKey(hive, font_key_path)
+            i = 0
+            while True:
+                try:
+                    reg_name, reg_value, _ = winreg.EnumValue(key, i)
+                    # "MS UI Gothic & MS UI PGothic & MS UI Gothic (TrueType)"
+                    # → 括弧前を取得し、& で分割して各名前を確認
+                    base_name = reg_name.split(" (")[0].strip()
+                    names = [n.strip() for n in base_name.split("&")]
+                    if font_name in names:
+                        # reg_value がフルパスか、ファイル名のみか
+                        if os.path.isabs(reg_value):
+                            path = reg_value
+                        else:
+                            path = os.path.join(fonts_dir, reg_value)
+                        if os.path.exists(path):
+                            winreg.CloseKey(key)
+                            return path
+                    i += 1
+                except OSError:
+                    break
+            winreg.CloseKey(key)
+        except OSError:
+            pass
+
+    return None
+
+
+def _render_subtitle_image(
+    text: str,
+    font_name: str = "MS UI Gothic",
+    font_size: int = 34,
+    bold: bool = False,
+    italic: bool = False,
+    text_color: str = "ffffff",
+    edge_color: str = "000000",
+    soft_edge: bool = True,
+    align: int = 4,
+    pos_x: float = 0,
+    pos_y: float = 0,
+    spacing_y: int = 0,
+    max_chars_per_line: int = 0,
+    width: int = 1920,
+    height: int = 1080,
+) -> bytes:
+    """字幕テキストを透過PNGとしてレンダリングする。
+
+    Returns:
+        PNG画像のバイト列
+    """
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    # テキスト折り返し
+    if max_chars_per_line > 0:
+        wrapped_lines = []
+        for line in text.split("\n"):
+            if not line:
+                wrapped_lines.append("")
+                continue
+            for i in range(0, len(line), max_chars_per_line):
+                wrapped_lines.append(line[i:i + max_chars_per_line])
+        lines = wrapped_lines
+    else:
+        lines = text.split("\n")
+
+    # フォント解決
+    font_path = _resolve_font_path(font_name)
+    if not font_path:
+        # フォールバック: msgothic.ttc
+        fallback = os.path.join(
+            os.environ.get("WINDIR", r"C:\Windows"), "Fonts", "msgothic.ttc"
+        )
+        if os.path.exists(fallback):
+            font_path = fallback
+
+    try:
+        font = ImageFont.truetype(font_path or "", font_size)
+    except (OSError, AttributeError):
+        font = ImageFont.load_default()
+
+    # 色パース
+    def parse_hex(h: str) -> tuple[int, int, int, int]:
+        h = h.lstrip("#")
+        if len(h) != 6:
+            h = "ffffff"
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
+
+    fill_color = parse_hex(text_color)
+    stroke_color = parse_hex(edge_color)
+    stroke_width = max(1, font_size // 12) if soft_edge else 0
+
+    line_height = font_size + spacing_y
+    total_text_height = len(lines) * line_height
+
+    # align: 3x3グリッド (0-8)
+    col_align = align % 3   # 0=左, 1=中, 2=右
+    row_align = align // 3  # 0=上, 1=中, 2=下
+
+    # AviUtl座標系: 画面中央が(0,0)。pos_x/pos_yはアンカーポイント。
+    anchor_x = width / 2 + pos_x
+    anchor_y = height / 2 + pos_y
+
+    # Y基準位置（アライメントでアンカーからの配置方向を決定）
+    if row_align == 0:
+        base_y = int(anchor_y)
+    elif row_align == 1:
+        base_y = int(anchor_y - total_text_height / 2)
+    else:
+        base_y = int(anchor_y - total_text_height)
+
+    for i, line in enumerate(lines):
+        if not line:
+            continue
+        y = base_y + i * line_height
+
+        # X位置計算
+        bbox = font.getbbox(line)
+        text_w = bbox[2] - bbox[0]
+
+        if col_align == 0:
+            x = int(anchor_x)
+        elif col_align == 1:
+            x = int(anchor_x - text_w / 2)
+        else:
+            x = int(anchor_x - text_w)
+
+        draw.text(
+            (x, y), line, font=font, fill=fill_color,
+            stroke_width=stroke_width, stroke_fill=stroke_color,
+        )
+
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _render_preview_frame(
+    text: str,
+    speaker_index: int,
+    settings: dict,
+    num_speakers: int = 2,
+    width: int = 1920,
+    height: int = 1080,
+) -> bytes:
+    """背景+立ち絵+字幕を合成した1枚のJPEG画像を返す。
+
+    Args:
+        text: 字幕テキスト
+        speaker_index: アクティブ話者のインデックス (0-based)
+        settings: exo設定辞書 (collectExoSettings()相当)
+        num_speakers: 話者数
+        width, height: 出力画像サイズ
+    Returns:
+        JPEG画像のバイト列
+    """
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+
+    # --- Layer 1: 背景画像 ---
+    bg_path = settings.get("background_image", "")
+    if bg_path and os.path.exists(bg_path):
+        try:
+            bg_img = Image.open(bg_path).convert("RGBA")
+            # cover: アスペクト比を維持しつつフルカバー
+            scale = max(width / bg_img.width, height / bg_img.height)
+            new_w = int(bg_img.width * scale)
+            new_h = int(bg_img.height * scale)
+            bg_img = bg_img.resize((new_w, new_h), Image.LANCZOS)
+            dx = (width - new_w) // 2
+            dy = (height - new_h) // 2
+            canvas.paste(bg_img, (dx, dy))
+        except Exception:
+            pass
+
+    # --- Layer 2: 立ち絵 ---
+    speaker_images = settings.get("speaker_images", [])
+    for i in range(num_speakers):
+        if i >= len(speaker_images):
+            continue
+        si = speaker_images[i]
+        file_path = si.get("file", "")
+        if not file_path or not os.path.exists(file_path):
+            continue
+
+        try:
+            tachie_img = Image.open(file_path).convert("RGBA")
+            scale_pct = si.get("scale", 100) / 100.0
+            new_w = int(tachie_img.width * scale_pct)
+            new_h = int(tachie_img.height * scale_pct)
+            if new_w > 0 and new_h > 0:
+                tachie_img = tachie_img.resize((new_w, new_h), Image.LANCZOS)
+
+            # AviUtl座標系: 画面中央が(0,0)
+            offset_x = si.get("x", 0)
+            offset_y = si.get("y", 0)
+            dx = int((width / 2) + offset_x - new_w / 2)
+            dy = int((height / 2) + offset_y - new_h / 2)
+
+            is_active = (i == speaker_index)
+            if not is_active:
+                # グレースケール変換
+                tachie_img = tachie_img.convert("LA").convert("RGBA")
+
+            # アルファ合成
+            temp = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            temp.paste(tachie_img, (dx, dy))
+            canvas = Image.alpha_composite(canvas, temp)
+        except Exception:
+            pass
+
+    # --- Layer 3: 字幕テキスト ---
+    colors = settings.get("speaker_colors", [])
+    if not colors:
+        colors = ["ffffff", "00ffff", "00ff00", "ff00ff",
+                  "ffff00", "ff8000", "8080ff", "80ff80"]
+    edge_colors = settings.get("speaker_edge_colors", [])
+    if not edge_colors:
+        edge_colors = ["000000"]
+    text_color = colors[speaker_index % len(colors)]
+    edge_color = edge_colors[speaker_index % len(edge_colors)]
+
+    subtitle_png = _render_subtitle_image(
+        text=text,
+        font_name=settings.get("font", "MS UI Gothic"),
+        font_size=settings.get("font_size", 34),
+        bold=settings.get("bold", False),
+        italic=settings.get("italic", False),
+        text_color=text_color,
+        edge_color=edge_color,
+        soft_edge=settings.get("soft_edge", True),
+        align=settings.get("align", 4),
+        pos_x=settings.get("pos_x", 0),
+        pos_y=settings.get("pos_y", 0),
+        spacing_y=settings.get("spacing_y", 0),
+        max_chars_per_line=settings.get("max_chars_per_line", 0),
+        width=width,
+        height=height,
+    )
+    subtitle_layer = Image.open(BytesIO(subtitle_png))
+    canvas = Image.alpha_composite(canvas, subtitle_layer)
+
+    # JPEG出力
+    rgb = canvas.convert("RGB")
+    buf = BytesIO()
+    rgb.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
 def _apply_speaker_mapping(
     segments: list[transcriber.TranscriptionSegment],
     mapping: dict[str, int] | None,
@@ -455,6 +727,43 @@ class Api:
             logger.exception("音声再生エラー")
             return {"success": False, "error": str(e)}
 
+    def play_segment_audio(self, index: int):
+        """指定インデックスのセグメント区間の音声を再生する。"""
+        if not self._last_segments or not self._last_wav_path:
+            return {"success": False, "error": "再生データがありません"}
+
+        if not os.path.exists(self._last_wav_path):
+            return {"success": False, "error": "音声ファイルが見つかりません"}
+
+        if index < 0 or index >= len(self._last_segments):
+            return {"success": False, "error": "無効なインデックス"}
+
+        seg = self._last_segments[index]
+
+        try:
+            import sounddevice as sd
+            import soundfile as sf
+
+            data, sr = sf.read(self._last_wav_path)
+            start_sample = int(seg.start * sr)
+            end_sample = min(int(seg.end * sr), len(data))
+            segment_data = data[start_sample:end_sample]
+            sd.stop()
+            sd.play(segment_data, sr)
+            return {"success": True}
+        except Exception as e:
+            logger.exception("セグメント音声再生エラー")
+            return {"success": False, "error": str(e)}
+
+    def stop_audio(self):
+        """音声再生を停止する。"""
+        try:
+            import sounddevice as sd
+            sd.stop()
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def _build_speaker_info(
         self, segments: list[transcriber.TranscriptionSegment],
     ) -> list[dict]:
@@ -501,6 +810,242 @@ class Api:
             data["hf_token_encrypted"] = ""
         settings.save_settings(data)
         return {"success": True}
+
+    # --- セグメント編集 ---
+
+    def _bake_mapping(self):
+        """現在のマッピングを _last_segments に焼き込み、マッピングをリセットする。
+
+        セグメント編集操作の前に呼ぶことで、エディタが表示通りの話者名で
+        直接操作できるようにする。
+        """
+        if not self._speaker_mapping or not self._last_segments:
+            return
+        self._last_segments = _apply_speaker_mapping(
+            self._last_segments, self._speaker_mapping
+        )
+        self._speaker_mapping = None
+
+    def _regenerate_output(self):
+        """現在のセグメントから出力テキストを再生成して返す。"""
+        segments = _apply_speaker_mapping(
+            self._last_segments, self._speaker_mapping
+        )
+        fmt = self._last_output_format
+        if fmt == "exo":
+            text = exporter.export_exo(segments, settings=self._exo_settings)
+        else:
+            _, _, export_fn = exporter.EXPORTERS[fmt]
+            text = export_fn(segments)
+        return text
+
+    def _segments_response(self):
+        """セグメント編集後の共通レスポンスを構築する。"""
+        text = self._regenerate_output()
+        segments = _apply_speaker_mapping(
+            self._last_segments, self._speaker_mapping
+        )
+        speakers = sorted(set(s.speaker or "Speaker 1" for s in self._last_segments))
+        return {
+            "success": True,
+            "text": text,
+            "segments": [
+                {
+                    "start": s.start,
+                    "end": s.end,
+                    "text": s.text,
+                    "speaker": s.speaker or "Speaker 1",
+                }
+                for s in segments
+            ],
+            "speakers": speakers,
+        }
+
+    def update_segment(self, index: int, speaker: str | None = None,
+                       text: str | None = None,
+                       start: float | None = None, end: float | None = None):
+        """セグメントの話者・テキスト・時刻を更新する。"""
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+        self._bake_mapping()
+        if index < 0 or index >= len(self._last_segments):
+            return {"success": False, "error": "無効なインデックス"}
+
+        seg = self._last_segments[index]
+        self._last_segments[index] = transcriber.TranscriptionSegment(
+            start=start if start is not None else seg.start,
+            end=end if end is not None else seg.end,
+            text=text if text is not None else seg.text,
+            speaker=speaker if speaker is not None else seg.speaker,
+        )
+        return self._segments_response()
+
+    def add_segment(self, start: float, end: float, text: str,
+                    speaker: str = "Speaker 1"):
+        """新しいセグメントを時刻順に挿入する。"""
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+        if start >= end:
+            return {"success": False, "error": "開始時刻は終了時刻より前にしてください"}
+        self._bake_mapping()
+
+        new_seg = transcriber.TranscriptionSegment(
+            start=start, end=end, text=text, speaker=speaker,
+        )
+        # 時刻順に挿入位置を探す
+        insert_idx = 0
+        for i, seg in enumerate(self._last_segments):
+            if seg.start > start:
+                break
+            insert_idx = i + 1
+        self._last_segments.insert(insert_idx, new_seg)
+
+        resp = self._segments_response()
+        resp["inserted_index"] = insert_idx
+        return resp
+
+    def delete_segment(self, index: int):
+        """セグメントを削除する。"""
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+        self._bake_mapping()
+        if index < 0 or index >= len(self._last_segments):
+            return {"success": False, "error": "無効なインデックス"}
+        if len(self._last_segments) <= 1:
+            return {"success": False, "error": "最後のセグメントは削除できません"}
+
+        self._last_segments.pop(index)
+        return self._segments_response()
+
+    def get_preview_segments(self, speaker_mapping: dict | None = None):
+        """プレビュー用のセグメント一覧を返す（マッピング適用済み）。"""
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+
+        mapping = speaker_mapping or self._speaker_mapping
+        segments = _apply_speaker_mapping(self._last_segments, mapping)
+
+        return {
+            "success": True,
+            "segments": [
+                {
+                    "start": s.start,
+                    "end": s.end,
+                    "text": s.text,
+                    "speaker": s.speaker or "Speaker 1",
+                }
+                for s in segments
+            ],
+        }
+
+    def get_image_base64(self, file_path: str):
+        """ローカル画像ファイルをbase64エンコードして返す。"""
+        import base64
+        import mimetypes
+
+        if not file_path or not os.path.exists(file_path):
+            return {"success": False, "error": "ファイルが見つかりません"}
+
+        try:
+            mime, _ = mimetypes.guess_type(file_path)
+            if mime is None:
+                mime = "image/png"
+            with open(file_path, "rb") as f:
+                data = base64.b64encode(f.read()).decode("ascii")
+            return {
+                "success": True,
+                "data_url": f"data:{mime};base64,{data}",
+            }
+        except Exception as e:
+            logger.exception("画像読み込みエラー")
+            return {"success": False, "error": str(e)}
+
+    def render_subtitle_image(self, text: str, speaker_index: int = 0,
+                              settings_dict: dict | None = None):
+        """字幕テキストをPillow で透過PNGにレンダリングし、base64で返す。"""
+        import base64
+
+        s = settings_dict or {}
+        colors = s.get("speaker_colors", [])
+        if not colors:
+            colors = ["ffffff", "00ffff", "00ff00", "ff00ff",
+                      "ffff00", "ff8000", "8080ff", "80ff80"]
+        edge_colors = s.get("speaker_edge_colors", [])
+        if not edge_colors:
+            edge_colors = ["000000"]
+
+        text_color = colors[speaker_index % len(colors)]
+        edge_color = edge_colors[speaker_index % len(edge_colors)]
+
+        try:
+            png_bytes = _render_subtitle_image(
+                text=text,
+                font_name=s.get("font", "MS UI Gothic"),
+                font_size=s.get("font_size", 34),
+                bold=s.get("bold", False),
+                italic=s.get("italic", False),
+                text_color=text_color,
+                edge_color=edge_color,
+                soft_edge=s.get("soft_edge", True),
+                align=s.get("align", 4),
+                pos_x=s.get("pos_x", 0),
+                pos_y=s.get("pos_y", 0),
+                spacing_y=s.get("spacing_y", 0),
+                max_chars_per_line=s.get("max_chars_per_line", 0),
+            )
+            data = base64.b64encode(png_bytes).decode("ascii")
+            return {
+                "success": True,
+                "data_url": f"data:image/png;base64,{data}",
+            }
+        except Exception as e:
+            logger.exception("字幕レンダリングエラー")
+            return {"success": False, "error": str(e)}
+
+    def render_preview_frame(self, index: int, settings_dict: dict | None = None):
+        """指定セグメントの完全プレビュー画像（背景+立ち絵+字幕）を返す。
+
+        全レイヤーをPillow側で合成した1枚のJPEGをbase64で返す。
+        """
+        import base64
+
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+
+        mapping = self._speaker_mapping
+        segments = _apply_speaker_mapping(self._last_segments, mapping)
+
+        if index < 0 or index >= len(segments):
+            return {"success": False, "error": "無効なインデックス"}
+
+        seg = segments[index]
+        s = settings_dict or {}
+
+        # 話者インデックスを算出
+        import re
+        match = re.match(r"Speaker (\d+)", seg.speaker or "Speaker 1")
+        speaker_idx = (int(match.group(1)) - 1) if match else 0
+
+        # 話者数
+        num_speakers = len(set(
+            seg.speaker or "Speaker 1" for seg in segments
+        ))
+
+        try:
+            jpeg_bytes = _render_preview_frame(
+                text=seg.text,
+                speaker_index=speaker_idx,
+                settings=s,
+                num_speakers=num_speakers,
+            )
+            data = base64.b64encode(jpeg_bytes).decode("ascii")
+            return {
+                "success": True,
+                "data_url": f"data:image/jpeg;base64,{data}",
+            }
+        except Exception as e:
+            logger.exception("プレビューレンダリングエラー")
+            return {"success": False, "error": str(e)}
 
     def _update_progress(self, progress: float, message: str):
         self._progress = {"progress": progress, "message": message}

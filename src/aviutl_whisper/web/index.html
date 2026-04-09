@@ -187,6 +187,47 @@
                 <div id="speaker-mapping-list"></div>
                 <button id="btn-swap-speakers" class="btn btn-swap hidden">🔄 話者を入れ替え</button>
             </div>
+            <div id="exo-preview-area" class="exo-preview-area hidden">
+                <h3>🖥️ シーンプレビュー</h3>
+                <div class="preview-container">
+                    <img id="preview-image" class="preview-image" alt="プレビュー">
+                </div>
+                <div class="preview-nav">
+                    <button id="btn-prev-seg" class="btn btn-nav" title="前のセグメント">◀</button>
+                    <span id="preview-seg-info" class="preview-seg-info">- / -</span>
+                    <button id="btn-next-seg" class="btn btn-nav" title="次のセグメント">▶</button>
+                </div>
+                <div id="preview-seg-detail" class="preview-seg-detail"></div>
+                <!-- セグメント編集パネル -->
+                <div id="seg-editor" class="seg-editor hidden">
+                    <div class="seg-editor-row">
+                        <div class="seg-editor-field">
+                            <label>話者</label>
+                            <select id="seg-edit-speaker" class="seg-edit-input"></select>
+                        </div>
+                        <div class="seg-editor-field seg-editor-time">
+                            <label>開始</label>
+                            <input type="number" id="seg-edit-start" class="seg-edit-input" step="0.1" min="0">
+                        </div>
+                        <div class="seg-editor-field seg-editor-time">
+                            <label>終了</label>
+                            <input type="number" id="seg-edit-end" class="seg-edit-input" step="0.1" min="0">
+                        </div>
+                    </div>
+                    <div class="seg-editor-row">
+                        <div class="seg-editor-field seg-editor-text-field">
+                            <label>テキスト</label>
+                            <textarea id="seg-edit-text" class="seg-edit-input seg-edit-textarea" rows="2"></textarea>
+                        </div>
+                    </div>
+                    <div class="seg-editor-actions">
+                        <button id="btn-seg-apply" class="btn btn-small btn-primary" title="変更を適用">✔ 適用</button>
+                        <button id="btn-seg-play" class="btn btn-small" title="このセグメントの音声を再生">🔊 再生</button>
+                        <button id="btn-seg-add" class="btn btn-small" title="新しいセグメントを追加">＋ 追加</button>
+                        <button id="btn-seg-delete" class="btn btn-small btn-danger" title="このセグメントを削除">🗑 削除</button>
+                    </div>
+                </div>
+            </div>
             <div class="result-preview">
                 <textarea id="result-text" readonly></textarea>
             </div>

@@ -47,6 +47,20 @@ function initEventListeners() {
     $("#btn-copy").addEventListener("click", copyResult);
     $("#btn-bg-image").addEventListener("click", selectBackgroundImage);
     $("#btn-bg-image-clear").addEventListener("click", clearBackgroundImage);
+    $("#btn-prev-seg").addEventListener("click", () => navigatePreview(-1));
+    $("#btn-next-seg").addEventListener("click", () => navigatePreview(1));
+    $("#btn-seg-apply").addEventListener("click", applySegmentEdit);
+    $("#btn-seg-play").addEventListener("click", playSegmentAudio);
+    $("#btn-seg-add").addEventListener("click", addSegment);
+    $("#btn-seg-delete").addEventListener("click", deleteSegment);
+
+    // キーボードナビゲーション（矢印キー）
+    document.addEventListener("keydown", (e) => {
+        if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+        if ($("#exo-preview-area").classList.contains("hidden")) return;
+        if (e.key === "ArrowLeft") { navigatePreview(-1); e.preventDefault(); }
+        if (e.key === "ArrowRight") { navigatePreview(1); e.preventDefault(); }
+    });
 }
 
 // --- exo設定パネルの表示/非表示 ---
@@ -54,8 +68,15 @@ function updateExoSettingsVisibility() {
     const exoSection = $("#exo-settings-section");
     if ($("#output-format").value === "exo") {
         show(exoSection);
+        // 結果がある場合はプレビューも表示
+        if (previewSegments.length > 0) {
+            show($("#exo-preview-area"));
+            renderPreviewImage();
+            updatePreviewNav();
+        }
     } else {
         hide(exoSection);
+        hide($("#exo-preview-area"));
     }
 }
 
@@ -236,6 +257,7 @@ async function selectTachieImage(speakerIndex) {
             const label = document.querySelector(`.tachie-file-name[data-index="${speakerIndex}"]`);
             if (label) label.textContent = path.split(/[\\/]/).pop();
             scheduleAutoSave();
+            schedulePreviewRedraw();
         }
     } catch (e) {
         console.error("画像選択エラー:", e);
@@ -287,6 +309,7 @@ async function selectBackgroundImage() {
             const name = result.split(/[\\/]/).pop();
             $("#bg-image-name").textContent = name;
             autoSave();
+            schedulePreviewRedraw();
         }
     } catch (e) {
         console.error("背景画像選択エラー:", e);
@@ -297,6 +320,7 @@ function clearBackgroundImage() {
     backgroundImage = "";
     $("#bg-image-name").textContent = "未選択";
     autoSave();
+    schedulePreviewRedraw();
 }
 
 // --- ファイル選択 ---
@@ -405,6 +429,13 @@ function showResult(result) {
         show($("#speaker-mapping-area"));
     } else {
         hide($("#speaker-mapping-area"));
+    }
+
+    // exoプレビュー
+    if ($("#output-format").value === "exo") {
+        initExoPreview();
+    } else {
+        hide($("#exo-preview-area"));
     }
 }
 
@@ -527,6 +558,8 @@ async function applyMapping() {
         if (result && result.success) {
             $("#result-text").value = result.text;
         }
+        // マッピング変更後にプレビュー再読み込み
+        if (format === "exo") initExoPreview();
     } catch (e) {
         console.error("マッピング変更エラー:", e);
     }
@@ -681,17 +714,18 @@ function setupAutoSave() {
     const exoInputs = [
         "exo-font", "exo-font-size", "exo-spacing-x", "exo-spacing-y",
         "exo-display-speed", "exo-align", "exo-pos-x", "exo-pos-y",
+        "exo-max-chars",
     ];
     for (const id of exoInputs) {
-        $(`#${id}`).addEventListener("change", scheduleAutoSave);
+        $(`#${id}`).addEventListener("change", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
     }
     for (const id of ["exo-bold", "exo-italic", "exo-soft-edge"]) {
-        $(`#${id}`).addEventListener("change", scheduleAutoSave);
+        $(`#${id}`).addEventListener("change", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
     }
     // 話者色は動的なのでcontainerに委任
-    $("#speaker-colors-list").addEventListener("input", scheduleAutoSave);
+    $("#speaker-colors-list").addEventListener("input", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
     // 立ち絵設定も動的
-    $("#speaker-tachie-list").addEventListener("input", scheduleAutoSave);
+    $("#speaker-tachie-list").addEventListener("input", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
 }
 
 // --- ユーティリティ ---
@@ -700,4 +734,261 @@ function formatBytes(bytes) {
     if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
     if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + " MB";
     return (bytes / 1073741824).toFixed(2) + " GB";
+}
+
+// ============================================================
+// exo シーンプレビュー
+// ============================================================
+
+let previewSegments = [];
+let previewIndex = 0;
+
+// ============================================================
+// プレビュー画像（完全サーバーサイドレンダリング）
+// ============================================================
+
+async function initExoPreview() {
+    const area = $("#exo-preview-area");
+    try {
+        const mapping = Object.keys(currentMapping).length > 0 ? currentMapping : null;
+        const res = await pywebview.api.get_preview_segments(mapping);
+        if (!res || !res.success) {
+            hide(area);
+            return;
+        }
+        previewSegments = res.segments;
+        previewIndex = 0;
+        show(area);
+        await renderPreviewImage();
+        updatePreviewNav();
+        populateSegmentEditor();
+    } catch (e) {
+        console.error("プレビュー初期化エラー:", e);
+        hide(area);
+    }
+}
+
+async function renderPreviewImage() {
+    const img = $("#preview-image");
+    if (previewSegments.length === 0) return;
+
+    try {
+        const settings = collectExoSettings();
+        const res = await pywebview.api.render_preview_frame(
+            previewIndex, settings
+        );
+        if (res && res.success) {
+            img.src = res.data_url;
+        }
+    } catch (e) {
+        console.error("プレビューレンダリングエラー:", e);
+    }
+}
+
+function navigatePreview(delta) {
+    const newIdx = previewIndex + delta;
+    if (newIdx < 0 || newIdx >= previewSegments.length) return;
+    previewIndex = newIdx;
+    renderPreviewImage();
+    updatePreviewNav();
+    populateSegmentEditor();
+}
+
+function updatePreviewNav() {
+    const total = previewSegments.length;
+    const idx = previewIndex;
+    $("#preview-seg-info").textContent = `${idx + 1} / ${total}`;
+    $("#btn-prev-seg").disabled = idx <= 0;
+    $("#btn-next-seg").disabled = idx >= total - 1;
+
+    if (total > 0 && previewSegments[idx]) {
+        const seg = previewSegments[idx];
+        const startStr = formatTime(seg.start);
+        const endStr = formatTime(seg.end);
+        const colors = (exoDefaults?.speaker_colors && exoDefaults.speaker_colors.length > 0)
+            ? exoDefaults.speaker_colors : DEFAULT_SPEAKER_COLORS;
+        const spkIdx = getSpeakerIndex(seg.speaker);
+        const color = colors[spkIdx % colors.length];
+        $("#preview-seg-detail").innerHTML =
+            `<span style="color:#${color}">●</span> ${seg.speaker} ` +
+            `<span style="color:var(--text-muted)">[${startStr} → ${endStr}]</span> ` +
+            `${seg.text.substring(0, 60)}${seg.text.length > 60 ? "…" : ""}`;
+    } else {
+        $("#preview-seg-detail").textContent = "";
+    }
+}
+
+function formatTime(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+}
+
+function getSpeakerIndex(speakerName) {
+    // "Speaker N" → N-1 (0-based)
+    const match = speakerName?.match(/Speaker (\d+)/);
+    return match ? parseInt(match[1]) - 1 : 0;
+}
+
+function schedulePreviewRedraw() {
+    if ($("#exo-preview-area").classList.contains("hidden")) return;
+    renderPreviewImage();
+}
+
+// ============================================================
+// セグメント編集
+// ============================================================
+
+function populateSegmentEditor() {
+    const editor = $("#seg-editor");
+    if (previewSegments.length === 0) {
+        hide(editor);
+        return;
+    }
+    show(editor);
+    const seg = previewSegments[previewIndex];
+
+    // 話者ドロップダウンを構築
+    const select = $("#seg-edit-speaker");
+    const speakers = getKnownSpeakers();
+    select.innerHTML = "";
+    for (const spk of speakers) {
+        const opt = document.createElement("option");
+        opt.value = spk;
+        opt.textContent = spk;
+        if (spk === seg.speaker) opt.selected = true;
+        select.appendChild(opt);
+    }
+
+    $("#seg-edit-start").value = seg.start.toFixed(2);
+    $("#seg-edit-end").value = seg.end.toFixed(2);
+    $("#seg-edit-text").value = seg.text;
+}
+
+function getKnownSpeakers() {
+    const set = new Set();
+    for (const seg of previewSegments) {
+        set.add(seg.speaker || "Speaker 1");
+    }
+    // 常に少なくとも num-speakers 分は候補に入れる
+    const numValue = $("#num-speakers").value;
+    const numSpeakers = numValue === "auto" ? 2 : parseInt(numValue);
+    for (let i = 1; i <= Math.max(numSpeakers, set.size); i++) {
+        set.add(`Speaker ${i}`);
+    }
+    return [...set].sort();
+}
+
+async function applySegmentEdit() {
+    if (previewSegments.length === 0) return;
+    const speaker = $("#seg-edit-speaker").value;
+    const text = $("#seg-edit-text").value;
+    const start = parseFloat($("#seg-edit-start").value);
+    const end = parseFloat($("#seg-edit-end").value);
+
+    try {
+        const res = await pywebview.api.update_segment(
+            previewIndex, speaker, text, start, end
+        );
+        if (res && res.success) {
+            handleSegmentEditResponse(res);
+        } else {
+            alert("更新エラー: " + (res?.error || "不明"));
+        }
+    } catch (e) {
+        console.error("セグメント更新エラー:", e);
+    }
+}
+
+async function addSegment() {
+    // 現在セグメントの終了時刻をデフォルトにする
+    let defaultStart = 0;
+    let defaultEnd = 1;
+    if (previewSegments.length > 0) {
+        const cur = previewSegments[previewIndex];
+        defaultStart = cur.end;
+        defaultEnd = cur.end + 2.0;
+    }
+
+    const startStr = prompt("開始時刻（秒）", defaultStart.toFixed(2));
+    if (startStr === null) return;
+    const endStr = prompt("終了時刻（秒）", defaultEnd.toFixed(2));
+    if (endStr === null) return;
+    const text = prompt("テキスト", "");
+    if (text === null) return;
+
+    const start = parseFloat(startStr);
+    const end = parseFloat(endStr);
+    if (isNaN(start) || isNaN(end)) {
+        alert("無効な時刻です");
+        return;
+    }
+
+    const speakers = getKnownSpeakers();
+    const speaker = speakers[0] || "Speaker 1";
+
+    try {
+        const res = await pywebview.api.add_segment(start, end, text, speaker);
+        if (res && res.success) {
+            handleSegmentEditResponse(res);
+            // 挿入位置に移動
+            if (res.inserted_index != null) {
+                previewIndex = res.inserted_index;
+            }
+            renderPreviewImage();
+            updatePreviewNav();
+            populateSegmentEditor();
+        } else {
+            alert("追加エラー: " + (res?.error || "不明"));
+        }
+    } catch (e) {
+        console.error("セグメント追加エラー:", e);
+    }
+}
+
+async function deleteSegment() {
+    if (previewSegments.length <= 1) {
+        alert("最後のセグメントは削除できません");
+        return;
+    }
+    if (!confirm(`セグメント ${previewIndex + 1} を削除しますか？`)) return;
+
+    try {
+        const res = await pywebview.api.delete_segment(previewIndex);
+        if (res && res.success) {
+            handleSegmentEditResponse(res);
+            // インデックスが範囲外にならないよう調整
+            if (previewIndex >= previewSegments.length) {
+                previewIndex = previewSegments.length - 1;
+            }
+            renderPreviewImage();
+            updatePreviewNav();
+            populateSegmentEditor();
+        } else {
+            alert("削除エラー: " + (res?.error || "不明"));
+        }
+    } catch (e) {
+        console.error("セグメント削除エラー:", e);
+    }
+}
+
+async function playSegmentAudio() {
+    if (previewSegments.length === 0) return;
+    try {
+        const res = await pywebview.api.play_segment_audio(previewIndex);
+        if (res && !res.success) {
+            console.warn("音声再生エラー:", res.error);
+        }
+    } catch (e) {
+        console.error("音声再生エラー:", e);
+    }
+}
+
+function handleSegmentEditResponse(res) {
+    // previewSegmentsとテキストエリアを更新
+    previewSegments = res.segments;
+    $("#result-text").value = res.text;
+    renderPreviewImage();
+    updatePreviewNav();
+    populateSegmentEditor();
 }
