@@ -383,7 +383,7 @@ class Api:
         self._last_result: transcriber.TranscriptionResult | None = None
         self._last_segments: list[transcriber.TranscriptionSegment] | None = None
         self._last_wav_path: str | None = None
-        self._last_output_format: str = "text"
+        self._last_output_format: str = "exo"
         self._speaker_mapping: dict[str, int] | None = None
         self._exo_settings: exporter.ExoSettings | None = None
         self._system_fonts: list[str] | None = None
