@@ -71,7 +71,7 @@ function updateExoSettingsVisibility() {
         // 結果がある場合はプレビューも表示
         if (previewSegments.length > 0) {
             show($("#exo-preview-area"));
-            drawPreviewFrame();
+            loadAndDrawPreview();
             updatePreviewNav();
         }
     } else {
@@ -760,7 +760,7 @@ async function initExoPreview() {
         previewIndex = 0;
         show(area);
         await preloadPreviewImages();
-        drawPreviewFrame();
+        await loadAndDrawPreview();
         updatePreviewNav();
         populateSegmentEditor();
     } catch (e) {
@@ -802,7 +802,7 @@ function navigatePreview(delta) {
     const newIdx = previewIndex + delta;
     if (newIdx < 0 || newIdx >= previewSegments.length) return;
     previewIndex = newIdx;
-    drawPreviewFrame();
+    loadAndDrawPreview();
     updatePreviewNav();
     populateSegmentEditor();
 }
@@ -843,40 +843,120 @@ function getSpeakerIndex(speakerName) {
     return match ? parseInt(match[1]) - 1 : 0;
 }
 
+// ============================================================
+// 字幕画像キャッシュ
+// ============================================================
+let subtitleImageCache = {};
+let subtitleCacheSettings = "";
+
+function getSubtitleCacheKey(seg) {
+    return `${seg.text}|${seg.speaker}`;
+}
+
+function getSettingsHash() {
+    const s = collectExoSettings();
+    return JSON.stringify([
+        s.font, s.font_size, s.bold, s.italic, s.soft_edge,
+        s.align, s.pos_x, s.pos_y, s.spacing_y, s.max_chars_per_line,
+        s.speaker_colors, s.speaker_edge_colors,
+    ]);
+}
+
+function invalidateSubtitleCache() {
+    subtitleImageCache = {};
+    subtitleCacheSettings = "";
+}
+
+/**
+ * 字幕画像をAPI経由でプリロードしてキャッシュに格納する。
+ * Promise<Image|null> を返す。
+ */
+async function ensureSubtitleImage(seg) {
+    // 設定変更時にキャッシュ無効化
+    const settingsHash = getSettingsHash();
+    if (settingsHash !== subtitleCacheSettings) {
+        subtitleImageCache = {};
+        subtitleCacheSettings = settingsHash;
+    }
+
+    const cacheKey = getSubtitleCacheKey(seg);
+    if (subtitleImageCache[cacheKey]) {
+        return subtitleImageCache[cacheKey];
+    }
+
+    const settings = collectExoSettings();
+    const spkIdx = getSpeakerIndex(seg.speaker);
+
+    try {
+        const res = await pywebview.api.render_subtitle_image(
+            seg.text, spkIdx, settings
+        );
+        if (!res || !res.success) return null;
+
+        // Image をロードして返す
+        return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+                subtitleImageCache[cacheKey] = img;
+                resolve(img);
+            };
+            img.onerror = () => resolve(null);
+            img.src = res.data_url;
+        });
+    } catch (e) {
+        console.error("字幕レンダリングエラー:", e);
+        return null;
+    }
+}
+
+/**
+ * 字幕画像をプリロードしてからCanvasに3レイヤーを同期描画する。
+ * プレビュー表示のメインエントリポイント（async）。
+ */
+async function loadAndDrawPreview() {
+    if (previewSegments.length > 0) {
+        const seg = previewSegments[previewIndex];
+        await ensureSubtitleImage(seg);
+    }
+    drawPreviewFrame();
+}
+
+/**
+ * Canvas に 背景→立ち絵→字幕 の3レイヤーを同期描画する。
+ * 字幕画像はキャッシュ済みのもののみ使用する（sync関数）。
+ */
 function drawPreviewFrame() {
     const canvas = $("#preview-canvas");
     const ctx = canvas.getContext("2d");
     const W = canvas.width;
     const H = canvas.height;
 
-    // クリア
     ctx.clearRect(0, 0, W, H);
 
-    // 1. 背景
+    // Layer 1: 背景
     drawBackground(ctx, W, H);
 
-    // 2. 立ち絵
     if (previewSegments.length > 0) {
         const seg = previewSegments[previewIndex];
-        drawTachie(ctx, W, H, seg.speaker);
-    }
 
-    // 3. 字幕テキスト（Pillow画像）
-    if (previewSegments.length > 0) {
-        const seg = previewSegments[previewIndex];
-        drawSubtitle(ctx, W, H, seg);
+        // Layer 2: 立ち絵
+        drawTachie(ctx, W, H, seg.speaker);
+
+        // Layer 3: 字幕（キャッシュ済み画像のみ）
+        const cacheKey = getSubtitleCacheKey(seg);
+        const subtitleImg = subtitleImageCache[cacheKey];
+        if (subtitleImg) {
+            ctx.drawImage(subtitleImg, 0, 0, W, H);
+        }
     }
 }
 
 function drawBackground(ctx, W, H) {
-    // 黒背景
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, W, H);
 
-    // 背景画像
     if (backgroundImage && previewImageCache[backgroundImage]) {
         const img = previewImageCache[backgroundImage];
-        // アスペクト比を維持してフィット（cover）
         const scale = Math.max(W / img.width, H / img.height);
         const dw = img.width * scale;
         const dh = img.height * scale;
@@ -903,7 +983,6 @@ function drawTachie(ctx, W, H, activeSpeaker) {
         const dy = (H / 2) + (td.y || 0) - dh / 2;
 
         if (!isActive) {
-            // グレースケール: オフスクリーンCanvasで彩度0を表現
             ctx.save();
             ctx.filter = "grayscale(100%)";
             ctx.drawImage(img, dx, dy, dw, dh);
@@ -914,71 +993,10 @@ function drawTachie(ctx, W, H, activeSpeaker) {
     }
 }
 
-// 字幕画像キャッシュ: key = "idx:text:speaker" + settings hash → Image
-let subtitleImageCache = {};
-let subtitleCacheSettings = "";
-
-function getSubtitleCacheKey(seg) {
-    return `${seg.text}|${seg.speaker}`;
-}
-
-function getSettingsHash() {
-    const s = collectExoSettings();
-    return JSON.stringify([
-        s.font, s.font_size, s.bold, s.italic, s.soft_edge,
-        s.align, s.pos_x, s.pos_y, s.spacing_y, s.max_chars_per_line,
-        s.speaker_colors, s.speaker_edge_colors,
-    ]);
-}
-
-function invalidateSubtitleCache() {
-    subtitleImageCache = {};
-    subtitleCacheSettings = "";
-}
-
-async function drawSubtitle(ctx, W, H, seg) {
-    const settings = collectExoSettings();
-    const spkIdx = getSpeakerIndex(seg.speaker);
-
-    // 設定変更時にキャッシュ無効化
-    const settingsHash = getSettingsHash();
-    if (settingsHash !== subtitleCacheSettings) {
-        subtitleImageCache = {};
-        subtitleCacheSettings = settingsHash;
-    }
-
-    const cacheKey = getSubtitleCacheKey(seg);
-
-    if (subtitleImageCache[cacheKey]) {
-        ctx.drawImage(subtitleImageCache[cacheKey], 0, 0, W, H);
-        return;
-    }
-
-    try {
-        const res = await pywebview.api.render_subtitle_image(
-            seg.text, spkIdx, settings
-        );
-        if (!res || !res.success) return;
-
-        const img = new Image();
-        img.onload = () => {
-            subtitleImageCache[cacheKey] = img;
-            // 背景と立ち絵を再描画してから字幕を重ねる
-            ctx.clearRect(0, 0, W, H);
-            drawBackground(ctx, W, H);
-            drawTachie(ctx, W, H, seg.speaker);
-            ctx.drawImage(img, 0, 0, W, H);
-        };
-        img.src = res.data_url;
-    } catch (e) {
-        console.error("字幕レンダリングエラー:", e);
-    }
-}
-
 function schedulePreviewRedraw() {
     if ($("#exo-preview-area").classList.contains("hidden")) return;
     invalidateSubtitleCache();
-    drawPreviewFrame();
+    loadAndDrawPreview();
 }
 
 // ============================================================
@@ -1081,7 +1099,7 @@ async function addSegment() {
             if (res.inserted_index != null) {
                 previewIndex = res.inserted_index;
             }
-            drawPreviewFrame();
+            loadAndDrawPreview();
             updatePreviewNav();
             populateSegmentEditor();
         } else {
@@ -1107,7 +1125,7 @@ async function deleteSegment() {
             if (previewIndex >= previewSegments.length) {
                 previewIndex = previewSegments.length - 1;
             }
-            drawPreviewFrame();
+            loadAndDrawPreview();
             updatePreviewNav();
             populateSegmentEditor();
         } else {
@@ -1134,7 +1152,8 @@ function handleSegmentEditResponse(res) {
     // previewSegmentsとテキストエリアを更新
     previewSegments = res.segments;
     $("#result-text").value = res.text;
-    drawPreviewFrame();
+    invalidateSubtitleCache();
+    loadAndDrawPreview();
     updatePreviewNav();
     populateSegmentEditor();
 }
