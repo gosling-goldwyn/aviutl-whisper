@@ -1619,3 +1619,161 @@ class TestPreviewFrameRendering:
         center_band = arr[mid_y - 50:mid_y + 50, :, 3]
         assert center_band.max() > 0, \
             "pos_y=0, align=中央なのに画面中央付近に字幕がない"
+
+
+# ============================================================
+# 字幕位置検証テスト（PNG直接、JPEGを介さない）
+# ============================================================
+
+class TestSubtitlePosition:
+    """_render_subtitle_image の出力PNGを使い、
+    align + pos_y の組み合わせでテキストが正しい画面領域に
+    描画されることをピクセルレベルで検証する。
+
+    JPEGを介さないため、位置の確認が正確にできる。
+    これらのテストは旧バグ（AviUtl座標系ミス）があった場合に失敗する。
+    """
+
+    WIDTH = 640
+    HEIGHT = 360
+
+    @staticmethod
+    def _png_alpha(png_bytes) -> "np.ndarray":
+        """PNG → アルファチャンネルのnumpy配列（0-255）。"""
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(png_bytes)).convert("RGBA")
+        return np.array(img)[:, :, 3]
+
+    def _render(self, **kwargs):
+        from aviutl_whisper.api import _render_subtitle_image
+        defaults = dict(
+            text="TEST",
+            font_size=60,
+            width=self.WIDTH,
+            height=self.HEIGHT,
+        )
+        defaults.update(kwargs)
+        return _render_subtitle_image(**defaults)
+
+    # --- align 3x3グリッドの位置確認 ---
+
+    def test_align_top_left_text_in_upper_region(self):
+        """align=0 (上左) + pos_y<0 でテキストが上部に描画される。
+
+        AviUtl座標系: pos_y=0は画面中央。上部に表示するにはpos_y<0が必要。
+        align=0はアンカー点をテキストの左上隅として使う。
+        """
+        # anchor_y = HEIGHT/2 + pos_y = 180 - 120 = 60 → base_y=60 → 上部に描画
+        alpha = self._png_alpha(self._render(align=0, pos_x=0, pos_y=-120))
+        upper = alpha[:self.HEIGHT // 3, :]   # y: 0-120
+        lower = alpha[self.HEIGHT * 2 // 3:, :]  # y: 240-360
+        assert upper.max() > 0, "align=0, pos_y=-120なのに上部(y<120)にピクセルがない"
+        assert lower.max() == 0, "align=0, pos_y=-120なのに下部(y>240)にピクセルがある"
+
+    def test_align_center_text_in_middle_region(self):
+        """align=4 (中央) でテキストが中央帯に描画される。"""
+        alpha = self._png_alpha(self._render(align=4, pos_x=0, pos_y=0))
+        mid_start = self.HEIGHT // 4
+        mid_end = self.HEIGHT * 3 // 4
+        center_band = alpha[mid_start:mid_end, :]
+        top_band = alpha[:self.HEIGHT // 8, :]
+        bottom_band = alpha[self.HEIGHT * 7 // 8:, :]
+        assert center_band.max() > 0, "中央揃えなのに中央帯にピクセルがない"
+        assert top_band.max() == 0, "中央揃えなのに最上部にピクセルがある"
+        assert bottom_band.max() == 0, "中央揃えなのに最下部にピクセルがある"
+
+    def test_align_bottom_center_text_in_lower_region(self):
+        """align=8 (下中央) + pos_y>0 でテキストが下部に描画される。
+
+        AviUtl座標系: pos_y=0は画面中央。下部に表示するにはpos_y>0が必要。
+        align=8はアンカー点をテキストブロックの下端として使う。
+        anchor_y = 180 + 130 = 310 → base_y = 310 - font_h = 250 → 下部に描画
+        """
+        alpha = self._png_alpha(self._render(align=8, pos_x=0, pos_y=130, font_size=40))
+        upper = alpha[:self.HEIGHT // 3, :]   # y: 0-120
+        lower = alpha[self.HEIGHT * 2 // 3:, :]  # y: 240-360
+        assert lower.max() > 0, "align=8, pos_y=130なのに下部(y>240)にピクセルがない"
+        assert upper.max() == 0, "align=8, pos_y=130なのに上部(y<120)にピクセルがある"
+
+    # --- AviUtl座標系の位置オフセット確認 ---
+
+    def test_pos_y_positive_moves_text_down(self):
+        """pos_y>0（下方向）でテキストが下にずれることを確認。"""
+        alpha_center = self._png_alpha(self._render(align=4, pos_y=0))
+        alpha_down = self._png_alpha(self._render(align=4, pos_y=80))
+
+        # 重心Y座標を計算（AviUtl: pos_y=80は画面中央+80px下）
+        center_rows = np.any(alpha_center > 0, axis=1).nonzero()[0]
+        down_rows = np.any(alpha_down > 0, axis=1).nonzero()[0]
+
+        assert len(center_rows) > 0, "pos_y=0で字幕が描画されていない"
+        assert len(down_rows) > 0, "pos_y=80で字幕が描画されていない"
+        assert down_rows.mean() > center_rows.mean(), \
+            "pos_y=80がpos_y=0より上に描画されている（座標系が逆）"
+
+    def test_pos_y_negative_moves_text_up(self):
+        """pos_y<0（上方向）でテキストが上にずれることを確認。"""
+        alpha_center = self._png_alpha(self._render(align=4, pos_y=0))
+        alpha_up = self._png_alpha(self._render(align=4, pos_y=-80))
+
+        center_rows = np.any(alpha_center > 0, axis=1).nonzero()[0]
+        up_rows = np.any(alpha_up > 0, axis=1).nonzero()[0]
+
+        assert len(center_rows) > 0, "pos_y=0で字幕が描画されていない"
+        assert len(up_rows) > 0, "pos_y=-80で字幕が描画されていない"
+        assert up_rows.mean() < center_rows.mean(), \
+            "pos_y=-80がpos_y=0より下に描画されている（座標系が逆）"
+
+    # --- 旧バグ再現：下揃え + 大きなpos_yで画面外に出るケース ---
+
+    def test_bottom_align_large_pos_y_stays_visible(self):
+        """旧バグ再現: align=8(下揃え) + pos_y=100でも画面内に字幕が存在する。
+
+        旧実装では base_y = height - total_text_height + pos_y の計算で、
+        pos_y=100 → 画面外にはみ出しアルファ=0になった。
+        """
+        # HEIGHT=360でalign=8、pos_yはピクセルに変換して境界ギリギリを狙う
+        # anchor_y = height/2 + pos_y = 180 + 100 = 280
+        # bottom align: base_y = anchor_y - total_text_height
+        # font_size=40, 1行: total_h=40 → base_y = 280 - 40 = 240 (画面内)
+        alpha = self._png_alpha(self._render(
+            align=8, pos_y=100, font_size=40, height=360, width=640
+        ))
+        assert alpha.max() > 0, \
+            "align=8, pos_y=100で字幕が画面内に描画されていない（座標系バグの可能性）"
+
+    def test_old_bug_reproduction_align7_pos_y_large(self):
+        """旧バグ再現（1920x1080スケール相当）: align=8, pos_yで画面内に収まる。
+
+        旧コードではbase_y = (height - padding - total_h) + pos_y だったため、
+        pos_yが大きいと1080を超えてアルファ=0になった。
+        新コードではanchor_y = height/2 + pos_y を基準にするため正常動作する。
+        """
+        # 1920x1080フルサイズでテスト
+        from io import BytesIO
+        from aviutl_whisper.api import _render_subtitle_image
+        from PIL import Image
+
+        png = _render_subtitle_image(
+            text="旧バグ再現テスト",
+            font_size=80,
+            align=8,    # 下中央
+            pos_x=0,
+            pos_y=480,  # AviUtl典型値: 画面中央+480px = y=1020付近
+            width=1920,
+            height=1080,
+        )
+        img = Image.open(BytesIO(png)).convert("RGBA")
+        alpha = np.array(img)[:, :, 3]
+
+        assert alpha.max() > 0, (
+            "align=8, pos_y=480(1920x1080)で字幕のアルファが全ゼロ。"
+            "AviUtl座標系の計算が誤っている可能性（旧バグが再発）"
+        )
+
+        # さらに字幕がy=800-1080の下部領域にあることを確認
+        bottom_region = alpha[800:, :]
+        top_region = alpha[:400, :]
+        assert bottom_region.max() > 0, "字幕が下部領域(y>800)に描画されていない"
+        assert top_region.max() == 0, "下揃えなのに字幕が上部(y<400)にある"
