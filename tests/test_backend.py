@@ -1777,3 +1777,178 @@ class TestSubtitlePosition:
         top_region = alpha[:400, :]
         assert bottom_region.max() > 0, "字幕が下部領域(y>800)に描画されていない"
         assert top_region.max() == 0, "下揃えなのに字幕が上部(y<400)にある"
+
+
+# ============================================================
+# プロジェクト保存・読み込みテスト
+# ============================================================
+
+class TestProjectSaveLoad:
+    """save_project / load_project のテスト。"""
+
+    def _make_api_with_segments(self):
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.transcriber import (
+            TranscriptionResult,
+            TranscriptionSegment,
+        )
+
+        api = Api()
+        segs = [
+            TranscriptionSegment(start=0.0, end=1.5, text="こんにちは", speaker="Speaker 1"),
+            TranscriptionSegment(start=1.5, end=3.0, text="元気ですか", speaker="Speaker 2"),
+            TranscriptionSegment(start=3.0, end=5.0, text="はい", speaker="Speaker 1"),
+        ]
+        api._last_segments = segs
+        api._last_result = TranscriptionResult(
+            segments=list(segs), language="ja", language_probability=0.99,
+        )
+        return api
+
+    def test_save_project_no_segments(self, tmp_path):
+        """セグメントがない場合はエラーを返す。"""
+        from unittest.mock import MagicMock
+        from aviutl_whisper.api import Api
+
+        api = Api()
+        api.window = MagicMock()
+        api.window.create_file_dialog.return_value = str(tmp_path / "test.awproj")
+        res = api.save_project({"source_file": "test.m4a"})
+        assert res["success"] is False
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        """保存→読み込みでセグメント・マッピング・設定が正しく復元される。"""
+        import json
+        from unittest.mock import MagicMock
+        from aviutl_whisper.api import Api
+
+        api = self._make_api_with_segments()
+        api.window = MagicMock()
+
+        proj_path = str(tmp_path / "test.awproj")
+        api.window.create_file_dialog.return_value = proj_path
+
+        exo_settings = {
+            "font": "Arial",
+            "font_size": 48,
+            "speaker_colors": ["ff0000", "00ff00"],
+        }
+        res = api.save_project({
+            "source_file": "C:/test/audio.m4a",
+            "exo_settings": exo_settings,
+            "preview_index": 2,
+        })
+        assert res["success"] is True
+        assert res["path"] == proj_path
+
+        # ファイル内容を検証
+        data = json.loads(Path(proj_path).read_text(encoding="utf-8"))
+        assert data["version"] == 1
+        assert data["source_file"] == "C:/test/audio.m4a"
+        assert data["language"] == "ja"
+        assert len(data["segments"]) == 3
+        assert data["segments"][0]["text"] == "こんにちは"
+        assert data["segments"][1]["speaker"] == "Speaker 2"
+        assert data["exo_settings"]["font"] == "Arial"
+        assert data["preview_index"] == 2
+
+        # 新しいApiで読み込み
+        api2 = Api()
+        api2.window = MagicMock()
+        api2.window.create_file_dialog.return_value = [proj_path]
+
+        res2 = api2.load_project()
+        assert res2["success"] is True
+        assert res2["source_file"] == "C:/test/audio.m4a"
+        assert res2["language"] == "ja"
+        assert res2["num_segments"] == 3
+        assert res2["num_speakers"] == 2
+        assert len(res2["segments"]) == 3
+        assert res2["segments"][0]["text"] == "こんにちは"
+        assert res2["exo_settings"]["font"] == "Arial"
+        assert res2["preview_index"] == 2
+
+        # 内部状態も復元されている
+        assert api2._last_segments is not None
+        assert len(api2._last_segments) == 3
+        assert api2._last_result.language == "ja"
+
+    def test_load_project_invalid_file(self, tmp_path):
+        """無効なJSONはエラーを返す。"""
+        from unittest.mock import MagicMock
+        from aviutl_whisper.api import Api
+
+        bad_path = tmp_path / "bad.awproj"
+        bad_path.write_text("not json", encoding="utf-8")
+
+        api = Api()
+        api.window = MagicMock()
+        api.window.create_file_dialog.return_value = [str(bad_path)]
+
+        res = api.load_project()
+        assert res["success"] is False
+
+    def test_load_project_missing_segments(self, tmp_path):
+        """segmentsキーがないファイルはエラーを返す。"""
+        import json
+        from unittest.mock import MagicMock
+        from aviutl_whisper.api import Api
+
+        bad_path = tmp_path / "no_seg.awproj"
+        bad_path.write_text(json.dumps({"version": 1}), encoding="utf-8")
+
+        api = Api()
+        api.window = MagicMock()
+        api.window.create_file_dialog.return_value = [str(bad_path)]
+
+        res = api.load_project()
+        assert res["success"] is False
+
+    def test_load_project_empty_segments(self, tmp_path):
+        """空のセグメント配列はエラーを返す。"""
+        import json
+        from unittest.mock import MagicMock
+        from aviutl_whisper.api import Api
+
+        bad_path = tmp_path / "empty.awproj"
+        bad_path.write_text(
+            json.dumps({"version": 1, "segments": []}),
+            encoding="utf-8",
+        )
+
+        api = Api()
+        api.window = MagicMock()
+        api.window.create_file_dialog.return_value = [str(bad_path)]
+
+        res = api.load_project()
+        assert res["success"] is False
+
+    def test_load_project_cancelled(self):
+        """ダイアログキャンセル時はエラーを返す。"""
+        from unittest.mock import MagicMock
+        from aviutl_whisper.api import Api
+
+        api = Api()
+        api.window = MagicMock()
+        api.window.create_file_dialog.return_value = None
+
+        res = api.load_project()
+        assert res["success"] is False
+
+    def test_save_with_speaker_mapping(self, tmp_path):
+        """話者マッピングが保存に含まれる。"""
+        import json
+        from unittest.mock import MagicMock
+
+        api = self._make_api_with_segments()
+        api.window = MagicMock()
+        api._speaker_mapping = {"Speaker 1": 1, "Speaker 2": 0}
+
+        proj_path = str(tmp_path / "mapped.awproj")
+        api.window.create_file_dialog.return_value = proj_path
+
+        res = api.save_project({"source_file": ""})
+        assert res["success"] is True
+
+        data = json.loads(Path(proj_path).read_text(encoding="utf-8"))
+        assert data["speaker_mapping"] == {"Speaker 1": 1, "Speaker 2": 0}

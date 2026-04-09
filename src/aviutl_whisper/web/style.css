@@ -104,6 +104,12 @@ body {
     color: var(--text-muted);
 }
 
+.project-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
 .settings-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;

@@ -48,6 +48,8 @@ function initEventListeners() {
     $("#btn-seg-play").addEventListener("click", playSegmentAudio);
     $("#btn-seg-add").addEventListener("click", addSegment);
     $("#btn-seg-delete").addEventListener("click", deleteSegment);
+    $("#btn-load-project").addEventListener("click", loadProject);
+    $("#btn-save-project").addEventListener("click", saveProject);
     $("#diarization-method").addEventListener("change", updateHfTokenVisibility);
     $("#num-speakers").addEventListener("change", () => {
         renderSpeakerColors();
@@ -409,6 +411,7 @@ function showResult(result) {
 
     setProgress(100, "完了！");
     $("#btn-save").disabled = false;
+    $("#btn-save-project").disabled = false;
 
     // 話者マッピングUI
     lastSpeakers = result.speakers || [];
@@ -433,6 +436,134 @@ async function saveResult() {
         }
     } catch (e) {
         alert("保存エラー: " + e);
+    }
+}
+
+// --- プロジェクト保存・読み込み ---
+async function saveProject() {
+    try {
+        const projectData = {
+            source_file: selectedFile || "",
+            exo_settings: collectExoSettings(),
+            preview_index: previewIndex,
+        };
+        const result = await pywebview.api.save_project(projectData);
+        if (result && result.success) {
+            alert("プロジェクトを保存しました: " + result.path);
+        } else if (result && result.error && result.error !== "キャンセルされました") {
+            alert("保存エラー: " + result.error);
+        }
+    } catch (e) {
+        alert("プロジェクト保存エラー: " + e);
+    }
+}
+
+async function loadProject() {
+    try {
+        const result = await pywebview.api.load_project();
+        if (!result || !result.success) {
+            if (result && result.error && result.error !== "キャンセルされました") {
+                alert("読み込みエラー: " + result.error);
+            }
+            return;
+        }
+
+        // ファイル情報を復元
+        selectedFile = result.source_file || null;
+        if (selectedFile) {
+            const name = selectedFile.split(/[\\/]/).pop();
+            $("#file-name").textContent = name;
+        } else {
+            $("#file-name").textContent = "未選択";
+        }
+
+        // exo設定をUIに反映
+        const exo = result.exo_settings;
+        if (exo) {
+            applyExoSettingsToUI(exo);
+        }
+
+        // 結果表示
+        const stats = $("#result-stats");
+        stats.innerHTML = `
+            <span>🎯 ${result.num_segments}セグメント</span>
+            <span>🗣️ ${result.num_speakers}人</span>
+            <span>🌐 ${result.language || "?"}</span>
+        `;
+
+        // ボタン有効化
+        $("#btn-save").disabled = false;
+        $("#btn-start").disabled = !selectedFile;
+        $("#btn-save-project").disabled = false;
+
+        // 話者マッピングUI
+        lastSpeakers = result.speakers || [];
+        if (lastSpeakers.length > 1) {
+            renderSpeakerMapping(lastSpeakers);
+            show($("#speaker-mapping-section"));
+        } else {
+            hide($("#speaker-mapping-section"));
+        }
+
+        // プレビュー + セグメントテーブル
+        previewIndex = result.preview_index || 0;
+        await initExoPreview();
+    } catch (e) {
+        alert("プロジェクト読み込みエラー: " + e);
+    }
+}
+
+function applyExoSettingsToUI(exo) {
+    if (exo.font) $("#exo-font").value = exo.font;
+    if (exo.font_size != null) $("#exo-font-size").value = exo.font_size;
+    if (exo.spacing_x != null) $("#exo-spacing-x").value = exo.spacing_x;
+    if (exo.spacing_y != null) $("#exo-spacing-y").value = exo.spacing_y;
+    if (exo.display_speed != null) $("#exo-display-speed").value = exo.display_speed;
+    if (exo.align != null) $("#exo-align").value = exo.align;
+    if (exo.pos_x != null) $("#exo-pos-x").value = exo.pos_x;
+    if (exo.pos_y != null) $("#exo-pos-y").value = exo.pos_y;
+    if (exo.max_chars_per_line != null) $("#exo-max-chars").value = exo.max_chars_per_line;
+    $("#exo-bold").checked = !!exo.bold;
+    $("#exo-italic").checked = !!exo.italic;
+    $("#exo-soft-edge").checked = exo.soft_edge !== false;
+
+    if (exo.speaker_colors) {
+        exoDefaults = exoDefaults || {};
+        exoDefaults.speaker_colors = exo.speaker_colors;
+    }
+    if (exo.speaker_edge_colors && exo.speaker_edge_colors.length > 0) {
+        exoDefaults = exoDefaults || {};
+        exoDefaults.speaker_edge_colors = exo.speaker_edge_colors;
+    }
+    renderSpeakerColors();
+
+    if (exo.speaker_images?.length > 0) {
+        tachieData = exo.speaker_images.map(img => ({
+            file: img.file || "",
+            x: img.x || 0,
+            y: img.y || 0,
+            scale: img.scale || 100,
+        }));
+    }
+    renderSpeakerTachie();
+
+    if (exo.background_image) {
+        backgroundImage = exo.background_image;
+        const name = backgroundImage.split(/[\\/]/).pop();
+        $("#bg-image-name").textContent = name;
+    } else {
+        backgroundImage = "";
+        $("#bg-image-name").textContent = "未選択";
+    }
+
+    if (exo.speaker_edge_colors?.length > 0) {
+        document.querySelectorAll(".speaker-edge-hex").forEach((el, i) => {
+            if (i < exo.speaker_edge_colors.length) {
+                el.value = exo.speaker_edge_colors[i];
+                const picker = document.querySelector(`.speaker-edge-color[data-index="${i}"]`);
+                if (picker) picker.value = "#" + exo.speaker_edge_colors[i];
+            }
+        });
     }
 }
 
