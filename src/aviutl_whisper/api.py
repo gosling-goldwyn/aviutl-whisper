@@ -210,6 +210,121 @@ def _render_subtitle_image(
     return buf.getvalue()
 
 
+def _render_preview_frame(
+    text: str,
+    speaker_index: int,
+    settings: dict,
+    num_speakers: int = 2,
+    width: int = 1920,
+    height: int = 1080,
+) -> bytes:
+    """背景+立ち絵+字幕を合成した1枚のJPEG画像を返す。
+
+    Args:
+        text: 字幕テキスト
+        speaker_index: アクティブ話者のインデックス (0-based)
+        settings: exo設定辞書 (collectExoSettings()相当)
+        num_speakers: 話者数
+        width, height: 出力画像サイズ
+    Returns:
+        JPEG画像のバイト列
+    """
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 255))
+
+    # --- Layer 1: 背景画像 ---
+    bg_path = settings.get("background_image", "")
+    if bg_path and os.path.exists(bg_path):
+        try:
+            bg_img = Image.open(bg_path).convert("RGBA")
+            # cover: アスペクト比を維持しつつフルカバー
+            scale = max(width / bg_img.width, height / bg_img.height)
+            new_w = int(bg_img.width * scale)
+            new_h = int(bg_img.height * scale)
+            bg_img = bg_img.resize((new_w, new_h), Image.LANCZOS)
+            dx = (width - new_w) // 2
+            dy = (height - new_h) // 2
+            canvas.paste(bg_img, (dx, dy))
+        except Exception:
+            pass
+
+    # --- Layer 2: 立ち絵 ---
+    speaker_images = settings.get("speaker_images", [])
+    for i in range(num_speakers):
+        if i >= len(speaker_images):
+            continue
+        si = speaker_images[i]
+        file_path = si.get("file", "")
+        if not file_path or not os.path.exists(file_path):
+            continue
+
+        try:
+            tachie_img = Image.open(file_path).convert("RGBA")
+            scale_pct = si.get("scale", 100) / 100.0
+            new_w = int(tachie_img.width * scale_pct)
+            new_h = int(tachie_img.height * scale_pct)
+            if new_w > 0 and new_h > 0:
+                tachie_img = tachie_img.resize((new_w, new_h), Image.LANCZOS)
+
+            # AviUtl座標系: 画面中央が(0,0)
+            offset_x = si.get("x", 0)
+            offset_y = si.get("y", 0)
+            dx = int((width / 2) + offset_x - new_w / 2)
+            dy = int((height / 2) + offset_y - new_h / 2)
+
+            is_active = (i == speaker_index)
+            if not is_active:
+                # グレースケール変換
+                tachie_img = tachie_img.convert("LA").convert("RGBA")
+
+            # アルファ合成
+            temp = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            temp.paste(tachie_img, (dx, dy))
+            canvas = Image.alpha_composite(canvas, temp)
+        except Exception:
+            pass
+
+    # --- Layer 3: 字幕テキスト ---
+    colors = settings.get("speaker_colors", [])
+    if not colors:
+        colors = ["ffffff", "00ffff", "00ff00", "ff00ff",
+                  "ffff00", "ff8000", "8080ff", "80ff80"]
+    edge_colors = settings.get("speaker_edge_colors", [])
+    if not edge_colors:
+        edge_colors = ["000000"]
+    text_color = colors[speaker_index % len(colors)]
+    edge_color = edge_colors[speaker_index % len(edge_colors)]
+
+    subtitle_png = _render_subtitle_image(
+        text=text,
+        font_name=settings.get("font", "MS UI Gothic"),
+        font_size=settings.get("font_size", 34),
+        bold=settings.get("bold", False),
+        italic=settings.get("italic", False),
+        text_color=text_color,
+        edge_color=edge_color,
+        soft_edge=settings.get("soft_edge", True),
+        align=settings.get("align", 4),
+        pos_x=settings.get("pos_x", 0),
+        pos_y=settings.get("pos_y", 0),
+        spacing_y=settings.get("spacing_y", 0),
+        max_chars_per_line=settings.get("max_chars_per_line", 0),
+        width=width,
+        height=height,
+    )
+    subtitle_layer = Image.open(BytesIO(subtitle_png))
+    canvas = Image.alpha_composite(canvas, subtitle_layer)
+
+    # JPEG出力
+    rgb = canvas.convert("RGB")
+    buf = BytesIO()
+    rgb.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
+
+
 def _apply_speaker_mapping(
     segments: list[transcriber.TranscriptionSegment],
     mapping: dict[str, int] | None,
@@ -885,6 +1000,51 @@ class Api:
             }
         except Exception as e:
             logger.exception("字幕レンダリングエラー")
+            return {"success": False, "error": str(e)}
+
+    def render_preview_frame(self, index: int, settings_dict: dict | None = None):
+        """指定セグメントの完全プレビュー画像（背景+立ち絵+字幕）を返す。
+
+        全レイヤーをPillow側で合成した1枚のJPEGをbase64で返す。
+        """
+        import base64
+
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+
+        mapping = self._speaker_mapping
+        segments = _apply_speaker_mapping(self._last_segments, mapping)
+
+        if index < 0 or index >= len(segments):
+            return {"success": False, "error": "無効なインデックス"}
+
+        seg = segments[index]
+        s = settings_dict or {}
+
+        # 話者インデックスを解算出
+        import re
+        match = re.match(r"Speaker (\d+)", seg.speaker or "Speaker 1")
+        speaker_idx = (int(match.group(1)) - 1) if match else 0
+
+        # 話者数
+        num_speakers = len(set(
+            seg.speaker or "Speaker 1" for seg in segments
+        ))
+
+        try:
+            jpeg_bytes = _render_preview_frame(
+                text=seg.text,
+                speaker_index=speaker_idx,
+                settings=s,
+                num_speakers=num_speakers,
+            )
+            data = base64.b64encode(jpeg_bytes).decode("ascii")
+            return {
+                "success": True,
+                "data_url": f"data:image/jpeg;base64,{data}",
+            }
+        except Exception as e:
+            logger.exception("プレビューレンダリングエラー")
             return {"success": False, "error": str(e)}
 
     def _update_progress(self, progress: float, message: str):

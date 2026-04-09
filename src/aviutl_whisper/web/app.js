@@ -71,7 +71,7 @@ function updateExoSettingsVisibility() {
         // 結果がある場合はプレビューも表示
         if (previewSegments.length > 0) {
             show($("#exo-preview-area"));
-            loadAndDrawPreview();
+            renderPreviewImage();
             updatePreviewNav();
         }
     } else {
@@ -257,7 +257,6 @@ async function selectTachieImage(speakerIndex) {
             const label = document.querySelector(`.tachie-file-name[data-index="${speakerIndex}"]`);
             if (label) label.textContent = path.split(/[\\/]/).pop();
             scheduleAutoSave();
-            await loadImageCached(path);
             schedulePreviewRedraw();
         }
     } catch (e) {
@@ -310,8 +309,6 @@ async function selectBackgroundImage() {
             const name = result.split(/[\\/]/).pop();
             $("#bg-image-name").textContent = name;
             autoSave();
-            // プレビュー用に画像をキャッシュして再描画
-            await loadImageCached(result);
             schedulePreviewRedraw();
         }
     } catch (e) {
@@ -745,7 +742,10 @@ function formatBytes(bytes) {
 
 let previewSegments = [];
 let previewIndex = 0;
-const previewImageCache = {};  // path → Image
+
+// ============================================================
+// プレビュー画像（完全サーバーサイドレンダリング）
+// ============================================================
 
 async function initExoPreview() {
     const area = $("#exo-preview-area");
@@ -759,8 +759,7 @@ async function initExoPreview() {
         previewSegments = res.segments;
         previewIndex = 0;
         show(area);
-        await preloadPreviewImages();
-        await loadAndDrawPreview();
+        await renderPreviewImage();
         updatePreviewNav();
         populateSegmentEditor();
     } catch (e) {
@@ -769,32 +768,20 @@ async function initExoPreview() {
     }
 }
 
-async function preloadPreviewImages() {
-    const paths = new Set();
-    if (backgroundImage) paths.add(backgroundImage);
-    for (const td of tachieData) {
-        if (td.file) paths.add(td.file);
-    }
-    const promises = [...paths].map(p => loadImageCached(p));
-    await Promise.allSettled(promises);
-}
+async function renderPreviewImage() {
+    const img = $("#preview-image");
+    if (previewSegments.length === 0) return;
 
-async function loadImageCached(filePath) {
-    if (previewImageCache[filePath]) return previewImageCache[filePath];
     try {
-        const res = await pywebview.api.get_image_base64(filePath);
-        if (!res || !res.success) return null;
-        return new Promise((resolve) => {
-            const img = new Image();
-            img.onload = () => {
-                previewImageCache[filePath] = img;
-                resolve(img);
-            };
-            img.onerror = () => resolve(null);
+        const settings = collectExoSettings();
+        const res = await pywebview.api.render_preview_frame(
+            previewIndex, settings
+        );
+        if (res && res.success) {
             img.src = res.data_url;
-        });
+        }
     } catch (e) {
-        return null;
+        console.error("プレビューレンダリングエラー:", e);
     }
 }
 
@@ -802,7 +789,7 @@ function navigatePreview(delta) {
     const newIdx = previewIndex + delta;
     if (newIdx < 0 || newIdx >= previewSegments.length) return;
     previewIndex = newIdx;
-    loadAndDrawPreview();
+    renderPreviewImage();
     updatePreviewNav();
     populateSegmentEditor();
 }
@@ -843,160 +830,9 @@ function getSpeakerIndex(speakerName) {
     return match ? parseInt(match[1]) - 1 : 0;
 }
 
-// ============================================================
-// 字幕画像キャッシュ
-// ============================================================
-let subtitleImageCache = {};
-let subtitleCacheSettings = "";
-
-function getSubtitleCacheKey(seg) {
-    return `${seg.text}|${seg.speaker}`;
-}
-
-function getSettingsHash() {
-    const s = collectExoSettings();
-    return JSON.stringify([
-        s.font, s.font_size, s.bold, s.italic, s.soft_edge,
-        s.align, s.pos_x, s.pos_y, s.spacing_y, s.max_chars_per_line,
-        s.speaker_colors, s.speaker_edge_colors,
-    ]);
-}
-
-function invalidateSubtitleCache() {
-    subtitleImageCache = {};
-    subtitleCacheSettings = "";
-}
-
-/**
- * 字幕画像をAPI経由でプリロードしてキャッシュに格納する。
- * Promise<Image|null> を返す。
- */
-async function ensureSubtitleImage(seg) {
-    // 設定変更時にキャッシュ無効化
-    const settingsHash = getSettingsHash();
-    if (settingsHash !== subtitleCacheSettings) {
-        subtitleImageCache = {};
-        subtitleCacheSettings = settingsHash;
-    }
-
-    const cacheKey = getSubtitleCacheKey(seg);
-    if (subtitleImageCache[cacheKey]) {
-        return subtitleImageCache[cacheKey];
-    }
-
-    const settings = collectExoSettings();
-    const spkIdx = getSpeakerIndex(seg.speaker);
-
-    try {
-        const res = await pywebview.api.render_subtitle_image(
-            seg.text, spkIdx, settings
-        );
-        if (!res || !res.success) return null;
-
-        // Image をロードして返す
-        return new Promise((resolve) => {
-            const img = new Image();
-            img.onload = () => {
-                subtitleImageCache[cacheKey] = img;
-                resolve(img);
-            };
-            img.onerror = () => resolve(null);
-            img.src = res.data_url;
-        });
-    } catch (e) {
-        console.error("字幕レンダリングエラー:", e);
-        return null;
-    }
-}
-
-/**
- * 字幕画像をプリロードしてからCanvasに3レイヤーを同期描画する。
- * プレビュー表示のメインエントリポイント（async）。
- */
-async function loadAndDrawPreview() {
-    if (previewSegments.length > 0) {
-        const seg = previewSegments[previewIndex];
-        await ensureSubtitleImage(seg);
-    }
-    drawPreviewFrame();
-}
-
-/**
- * Canvas に 背景→立ち絵→字幕 の3レイヤーを同期描画する。
- * 字幕画像はキャッシュ済みのもののみ使用する（sync関数）。
- */
-function drawPreviewFrame() {
-    const canvas = $("#preview-canvas");
-    const ctx = canvas.getContext("2d");
-    const W = canvas.width;
-    const H = canvas.height;
-
-    ctx.clearRect(0, 0, W, H);
-
-    // Layer 1: 背景
-    drawBackground(ctx, W, H);
-
-    if (previewSegments.length > 0) {
-        const seg = previewSegments[previewIndex];
-
-        // Layer 2: 立ち絵
-        drawTachie(ctx, W, H, seg.speaker);
-
-        // Layer 3: 字幕（キャッシュ済み画像のみ）
-        const cacheKey = getSubtitleCacheKey(seg);
-        const subtitleImg = subtitleImageCache[cacheKey];
-        if (subtitleImg) {
-            ctx.drawImage(subtitleImg, 0, 0, W, H);
-        }
-    }
-}
-
-function drawBackground(ctx, W, H) {
-    ctx.fillStyle = "#000";
-    ctx.fillRect(0, 0, W, H);
-
-    if (backgroundImage && previewImageCache[backgroundImage]) {
-        const img = previewImageCache[backgroundImage];
-        const scale = Math.max(W / img.width, H / img.height);
-        const dw = img.width * scale;
-        const dh = img.height * scale;
-        ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-    }
-}
-
-function drawTachie(ctx, W, H, activeSpeaker) {
-    const numValue = $("#num-speakers").value;
-    const numSpeakers = numValue === "auto" ? 2 : parseInt(numValue);
-
-    for (let i = 0; i < numSpeakers; i++) {
-        const td = tachieData[i];
-        if (!td || !td.file || !previewImageCache[td.file]) continue;
-
-        const img = previewImageCache[td.file];
-        const speakerName = `Speaker ${i + 1}`;
-        const isActive = speakerName === activeSpeaker;
-        const scale = (td.scale || 100) / 100;
-        const dw = img.width * scale;
-        const dh = img.height * scale;
-        // AviUtlの座標系: 画面中央が(0,0)
-        const dx = (W / 2) + (td.x || 0) - dw / 2;
-        const dy = (H / 2) + (td.y || 0) - dh / 2;
-
-        if (!isActive) {
-            ctx.save();
-            ctx.filter = "grayscale(100%)";
-            ctx.drawImage(img, dx, dy, dw, dh);
-            ctx.restore();
-        } else {
-            ctx.drawImage(img, dx, dy, dw, dh);
-        }
-    }
-}
-
 function schedulePreviewRedraw() {
     if ($("#exo-preview-area").classList.contains("hidden")) return;
-    invalidateSubtitleCache();
-    loadAndDrawPreview();
+    renderPreviewImage();
 }
 
 // ============================================================
@@ -1099,7 +935,7 @@ async function addSegment() {
             if (res.inserted_index != null) {
                 previewIndex = res.inserted_index;
             }
-            loadAndDrawPreview();
+            renderPreviewImage();
             updatePreviewNav();
             populateSegmentEditor();
         } else {
@@ -1125,7 +961,7 @@ async function deleteSegment() {
             if (previewIndex >= previewSegments.length) {
                 previewIndex = previewSegments.length - 1;
             }
-            loadAndDrawPreview();
+            renderPreviewImage();
             updatePreviewNav();
             populateSegmentEditor();
         } else {
@@ -1152,8 +988,7 @@ function handleSegmentEditResponse(res) {
     // previewSegmentsとテキストエリアを更新
     previewSegments = res.segments;
     $("#result-text").value = res.text;
-    invalidateSubtitleCache();
-    loadAndDrawPreview();
+    renderPreviewImage();
     updatePreviewNav();
     populateSegmentEditor();
 }

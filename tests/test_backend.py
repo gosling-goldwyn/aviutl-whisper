@@ -1340,3 +1340,223 @@ class TestPyannoteModels:
         from aviutl_whisper.models import load_pyannote_pipeline
         with pytest.raises(ImportError, match="pyannote.audioがインストールされていません"):
             load_pyannote_pipeline(hf_token="hf_test_token")
+
+
+# ============================================================
+# プレビューフレーム レンダリング ピクセルテスト
+# ============================================================
+
+class TestPreviewFrameRendering:
+    """_render_preview_frame のピクセルベーステスト。"""
+
+    BASE_SETTINGS = {
+        "font": "Arial",
+        "font_size": 60,
+        "bold": False,
+        "italic": False,
+        "speaker_colors": ["ffffff"],
+        "speaker_edge_colors": ["000000"],
+        "soft_edge": True,
+        "align": 4,
+        "pos_x": 0,
+        "pos_y": 0,
+        "spacing_y": 0,
+        "max_chars_per_line": 0,
+        "background_image": "",
+        "speaker_images": [],
+    }
+
+    @staticmethod
+    def _jpeg_to_array(jpeg_bytes):
+        """JPEGバイト列をnumpy配列に変換。"""
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(jpeg_bytes))
+        return np.array(img)
+
+    def test_subtitle_pixels_differ_from_blank(self):
+        """字幕ありと字幕なしでピクセルが異なることを確認。"""
+        from aviutl_whisper.api import _render_preview_frame
+
+        frame_with_text = _render_preview_frame(
+            text="SUBTITLE TEST",
+            speaker_index=0,
+            settings=self.BASE_SETTINGS,
+            width=640, height=360,
+        )
+        frame_blank = _render_preview_frame(
+            text="",
+            speaker_index=0,
+            settings=self.BASE_SETTINGS,
+            width=640, height=360,
+        )
+
+        arr_text = self._jpeg_to_array(frame_with_text)
+        arr_blank = self._jpeg_to_array(frame_blank)
+
+        assert arr_text.shape == arr_blank.shape
+        # ピクセルが一致しないことを確認（字幕が描画されている）
+        assert not np.array_equal(arr_text, arr_blank), \
+            "字幕ありと字幕なしのピクセルが完全に一致 — 字幕が描画されていない"
+
+    def test_different_text_produces_different_pixels(self):
+        """異なるテキストで異なるピクセルが生成されることを確認。"""
+        from aviutl_whisper.api import _render_preview_frame
+
+        frame_a = _render_preview_frame(
+            text="HELLO WORLD",
+            speaker_index=0,
+            settings=self.BASE_SETTINGS,
+            width=640, height=360,
+        )
+        frame_b = _render_preview_frame(
+            text="GOODBYE",
+            speaker_index=0,
+            settings=self.BASE_SETTINGS,
+            width=640, height=360,
+        )
+
+        arr_a = self._jpeg_to_array(frame_a)
+        arr_b = self._jpeg_to_array(frame_b)
+        assert not np.array_equal(arr_a, arr_b)
+
+    def test_output_is_valid_jpeg(self):
+        """出力がJPEG形式であることを確認。"""
+        from aviutl_whisper.api import _render_preview_frame
+
+        result = _render_preview_frame(
+            text="テスト",
+            speaker_index=0,
+            settings=self.BASE_SETTINGS,
+            width=640, height=360,
+        )
+        # JPEG magic bytes
+        assert result[:2] == b"\xff\xd8"
+        assert result[-2:] == b"\xff\xd9"
+
+    def test_subtitle_region_has_nonblack_pixels(self):
+        """黒背景上に白い字幕ピクセルが存在することを確認。"""
+        from aviutl_whisper.api import _render_preview_frame
+
+        frame = _render_preview_frame(
+            text="SUBTITLE",
+            speaker_index=0,
+            settings={**self.BASE_SETTINGS, "font_size": 80},
+            width=640, height=360,
+        )
+        arr = self._jpeg_to_array(frame)
+        # 少なくとも一部のピクセルが明るい（字幕テキスト）
+        bright_pixels = np.sum(arr > 200)
+        assert bright_pixels > 100, \
+            f"明るいピクセルが少なすぎる ({bright_pixels}) — 字幕が描画されていない可能性"
+
+    def test_with_background_image(self):
+        """背景画像ありでレンダリングが成功し、黒一色でないことを確認。"""
+        from aviutl_whisper.api import _render_preview_frame
+        from PIL import Image
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            bg = Image.new("RGB", (200, 200), (0, 128, 255))
+            bg.save(f, format="PNG")
+            bg_path = f.name
+
+        try:
+            settings = {**self.BASE_SETTINGS, "background_image": bg_path}
+            frame = _render_preview_frame(
+                text="テスト",
+                speaker_index=0,
+                settings=settings,
+                width=640, height=360,
+            )
+            arr = self._jpeg_to_array(frame)
+            # 背景が描画されている（青チャンネルに高い値がある）
+            assert arr[:, :, 2].max() > 200, \
+                "背景画像の青チャンネルが反映されていない"
+        finally:
+            os.unlink(bg_path)
+
+    def test_with_tachie_image(self):
+        """立ち絵ありでレンダリングが成功し、反映されることを確認。"""
+        from aviutl_whisper.api import _render_preview_frame
+        from PIL import Image
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            # 赤い半透明立ち絵
+            tachie = Image.new("RGBA", (100, 200), (255, 0, 0, 200))
+            tachie.save(f, format="PNG")
+            tachie_path = f.name
+
+        try:
+            settings = {
+                **self.BASE_SETTINGS,
+                "speaker_images": [
+                    {"file": tachie_path, "x": 0, "y": 0, "scale": 100},
+                ],
+            }
+            frame_with = _render_preview_frame(
+                text="",
+                speaker_index=0,
+                settings=settings,
+                num_speakers=1,
+                width=640, height=360,
+            )
+            frame_without = _render_preview_frame(
+                text="",
+                speaker_index=0,
+                settings=self.BASE_SETTINGS,
+                num_speakers=1,
+                width=640, height=360,
+            )
+            arr_with = self._jpeg_to_array(frame_with)
+            arr_without = self._jpeg_to_array(frame_without)
+            # 立ち絵ありの方が赤チャンネルに値がある
+            assert arr_with[:, :, 0].max() > arr_without[:, :, 0].max(), \
+                "立ち絵が反映されていない"
+        finally:
+            os.unlink(tachie_path)
+
+    def test_all_three_layers(self):
+        """背景+立ち絵+字幕の3レイヤーが全て描画されることをピクセルで確認。"""
+        from aviutl_whisper.api import _render_preview_frame
+        from PIL import Image
+
+        # 青い背景
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            bg = Image.new("RGB", (640, 360), (0, 0, 200))
+            bg.save(f, format="PNG")
+            bg_path = f.name
+
+        # 緑の立ち絵
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            tachie = Image.new("RGBA", (80, 160), (0, 200, 0, 255))
+            tachie.save(f, format="PNG")
+            tachie_path = f.name
+
+        try:
+            settings = {
+                **self.BASE_SETTINGS,
+                "background_image": bg_path,
+                "speaker_colors": ["ff0000"],
+                "font_size": 80,
+                "speaker_images": [
+                    {"file": tachie_path, "x": 0, "y": 0, "scale": 100},
+                ],
+            }
+            frame = _render_preview_frame(
+                text="TEST",
+                speaker_index=0,
+                settings=settings,
+                num_speakers=1,
+                width=640, height=360,
+            )
+            arr = self._jpeg_to_array(frame)
+
+            # 背景の青チャンネルが存在
+            assert arr[:, :, 2].max() > 150, "背景レイヤーが描画されていない"
+            # 立ち絵の緑チャンネルが存在
+            assert arr[:, :, 1].max() > 150, "立ち絵レイヤーが描画されていない"
+            # 字幕の赤チャンネルが存在（赤い字幕テキスト）
+            assert arr[:, :, 0].max() > 150, "字幕レイヤーが描画されていない"
+        finally:
+            os.unlink(bg_path)
+            os.unlink(tachie_path)
