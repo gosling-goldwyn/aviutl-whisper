@@ -1,5 +1,6 @@
 """Python↔JS ブリッジAPI - pywebviewのJSから呼び出されるAPI"""
 
+import json
 import logging
 import os
 import threading
@@ -8,6 +9,8 @@ from pathlib import Path
 import webview
 
 from . import audio, diarizer, exporter, models, settings, transcriber
+
+PROJECT_VERSION = 1
 
 logger = logging.getLogger(__name__)
 
@@ -383,7 +386,7 @@ class Api:
         self._last_result: transcriber.TranscriptionResult | None = None
         self._last_segments: list[transcriber.TranscriptionSegment] | None = None
         self._last_wav_path: str | None = None
-        self._last_output_format: str = "text"
+        self._last_output_format: str = "exo"
         self._speaker_mapping: dict[str, int] | None = None
         self._exo_settings: exporter.ExoSettings | None = None
         self._system_fonts: list[str] | None = None
@@ -810,6 +813,135 @@ class Api:
             data["hf_token_encrypted"] = ""
         settings.save_settings(data)
         return {"success": True}
+
+    # --- プロジェクト保存・読み込み ---
+
+    def save_project(self, project_data: dict):
+        """プロジェクトファイル (.awproj) に保存する。
+
+        フロントエンドから source_file / exo_settings / preview_index を受け取り、
+        バックエンドが保持するセグメント・マッピング情報と合わせてJSONで書き出す。
+        """
+        result = self.window.create_file_dialog(
+            webview.FileDialog.SAVE,
+            file_types=("プロジェクトファイル (*.awproj)",),
+            save_filename="project.awproj",
+        )
+        if not result:
+            return {"success": False, "error": "キャンセルされました"}
+
+        path = result if isinstance(result, str) else result[0]
+
+        if not self._last_segments:
+            return {"success": False, "error": "保存するセグメントがありません"}
+
+        mapping = self._speaker_mapping
+        segments = _apply_speaker_mapping(self._last_segments, mapping)
+
+        data = {
+            "version": PROJECT_VERSION,
+            "source_file": project_data.get("source_file", ""),
+            "language": (
+                self._last_result.language if self._last_result else ""
+            ),
+            "segments": [
+                {
+                    "start": s.start,
+                    "end": s.end,
+                    "text": s.text,
+                    "speaker": s.speaker or "Speaker 1",
+                }
+                for s in segments
+            ],
+            "speaker_mapping": mapping,
+            "exo_settings": project_data.get("exo_settings", {}),
+            "preview_index": project_data.get("preview_index", 0),
+        }
+
+        try:
+            Path(path).write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return {"success": True, "path": path}
+        except Exception as e:
+            logger.exception("プロジェクト保存エラー")
+            return {"success": False, "error": str(e)}
+
+    def load_project(self):
+        """プロジェクトファイル (.awproj) を読み込み、内部状態を復元する。"""
+        result = self.window.create_file_dialog(
+            webview.FileDialog.OPEN,
+            file_types=("プロジェクトファイル (*.awproj)",),
+        )
+        if not result or len(result) == 0:
+            return {"success": False, "error": "キャンセルされました"}
+
+        path = result[0]
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.exception("プロジェクトファイル読み込みエラー")
+            return {"success": False, "error": f"ファイルの読み込みに失敗: {e}"}
+
+        if not isinstance(data, dict) or "segments" not in data:
+            return {"success": False, "error": "無効なプロジェクトファイルです"}
+
+        segments_raw = data.get("segments", [])
+        segments = [
+            transcriber.TranscriptionSegment(
+                start=s["start"],
+                end=s["end"],
+                text=s["text"],
+                speaker=s.get("speaker"),
+            )
+            for s in segments_raw
+        ]
+
+        if not segments:
+            return {"success": False, "error": "セグメントが空です"}
+
+        self._last_segments = segments
+        self._speaker_mapping = data.get("speaker_mapping")
+
+        language = data.get("language", "")
+        self._last_result = transcriber.TranscriptionResult(
+            segments=list(segments),
+            language=language,
+            language_probability=0.0,
+        )
+
+        source_file = data.get("source_file", "")
+        if source_file and os.path.exists(source_file):
+            try:
+                self._cleanup_wav()
+                wav_path = audio.convert_to_wav(source_file)
+                self._last_wav_path = wav_path
+            except Exception:
+                logger.warning("WAV変換に失敗: %s", source_file)
+
+        speaker_info = self._build_speaker_info(segments)
+
+        return {
+            "success": True,
+            "path": path,
+            "source_file": source_file,
+            "language": language,
+            "segments": [
+                {
+                    "start": s.start,
+                    "end": s.end,
+                    "text": s.text,
+                    "speaker": s.speaker or "Speaker 1",
+                }
+                for s in segments
+            ],
+            "speakers": speaker_info,
+            "num_segments": len(segments),
+            "num_speakers": len(speaker_info),
+            "exo_settings": data.get("exo_settings", {}),
+            "preview_index": data.get("preview_index", 0),
+        }
 
     # --- セグメント編集 ---
 
