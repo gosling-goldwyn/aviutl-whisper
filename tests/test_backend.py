@@ -1073,6 +1073,76 @@ class TestSegmentEditing:
         assert res["success"] is True
         assert [s.speaker for s in api._last_segments if s.text != "テスト"] == original_speakers[1:]
 
+    # --- restore_segments (Undo/Redo バックエンド) ---
+
+    def test_restore_segments_basic(self):
+        """restore_segments でセグメントが正しく復元される。"""
+        api = self._make_api_with_segments()
+        snapshot = [
+            {"start": 0.0, "end": 2.0, "text": "復元テスト", "speaker": "Speaker A"},
+            {"start": 2.0, "end": 4.0, "text": "二番目", "speaker": "Speaker B"},
+        ]
+        res = api.restore_segments(snapshot)
+        assert res["success"] is True
+        assert len(api._last_segments) == 2
+        assert api._last_segments[0].text == "復元テスト"
+        assert api._last_segments[0].speaker == "Speaker A"
+        assert api._last_segments[1].start == 2.0
+        assert api._last_segments[1].end == 4.0
+
+    def test_restore_segments_resets_speaker_mapping(self):
+        """restore_segments は _speaker_mapping を None にリセットする。"""
+        api = self._make_api_with_segments()
+        api._speaker_mapping = {"Speaker 1": 1, "Speaker 2": 0}
+        snapshot = [{"start": 0.0, "end": 1.0, "text": "x", "speaker": "Speaker 1"}]
+        res = api.restore_segments(snapshot)
+        assert res["success"] is True
+        assert api._speaker_mapping is None
+
+    def test_restore_segments_response_contains_segments(self):
+        """restore_segments のレスポンスに segments が含まれる。"""
+        api = self._make_api_with_segments()
+        snapshot = [{"start": 0.0, "end": 1.0, "text": "abc", "speaker": "Speaker 1"}]
+        res = api.restore_segments(snapshot)
+        assert "segments" in res
+        assert res["segments"][0]["text"] == "abc"
+
+    def test_restore_segments_speaker_defaults_to_speaker1(self):
+        """speaker フィールドが省略された場合 'Speaker 1' がデフォルト。"""
+        api = self._make_api_with_segments()
+        snapshot = [{"start": 0.0, "end": 1.0, "text": "デフォルト話者"}]
+        res = api.restore_segments(snapshot)
+        assert res["success"] is True
+        assert api._last_segments[0].speaker == "Speaker 1"
+
+    def test_restore_segments_none_returns_error(self):
+        """None を渡すとエラーを返す。"""
+        api = self._make_api_with_segments()
+        res = api.restore_segments(None)
+        assert res["success"] is False
+        assert "error" in res
+
+    def test_restore_segments_invalid_data_returns_error(self):
+        """必須フィールド欠落時にエラーを返す（start が無い）。"""
+        api = self._make_api_with_segments()
+        res = api.restore_segments([{"end": 1.0, "text": "bad"}])
+        assert res["success"] is False
+        assert "error" in res
+
+    def test_restore_segments_preserves_count(self):
+        """復元後のセグメント数がスナップショット通りになる。"""
+        api = self._make_api_with_segments()
+        assert len(api._last_segments) == 3
+        snapshot = [
+            {"start": 0.0, "end": 1.0, "text": "A", "speaker": "Speaker 1"},
+            {"start": 1.0, "end": 2.0, "text": "B", "speaker": "Speaker 2"},
+            {"start": 2.0, "end": 3.0, "text": "C", "speaker": "Speaker 1"},
+            {"start": 3.0, "end": 4.0, "text": "D", "speaker": "Speaker 2"},
+        ]
+        res = api.restore_segments(snapshot)
+        assert res["success"] is True
+        assert len(api._last_segments) == 4
+
 
 class TestSubtitleRendering:
     """字幕画像レンダリングのテスト。"""

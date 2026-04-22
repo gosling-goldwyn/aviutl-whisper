@@ -83,16 +83,22 @@ function initEventListeners() {
 
     // キーボードナビゲーション
     document.addEventListener("keydown", (e) => {
-        // Ctrl+Z / Ctrl+Y: INPUT/TEXTAREA/SELECT 上では発火しない
+        // テキスト文字入力中のみネイティブ Ctrl+Z を優先（テキスト誤字修正用）
+        // number input / SELECT / BUTTON などではアプリ側 Undo を発火させる
+        const isTextInput = (
+            (e.target.tagName === "TEXTAREA") ||
+            (e.target.tagName === "INPUT" && (e.target.type === "text" || e.target.type === "password" || e.target.type === "search"))
+        );
+
         if (e.ctrlKey && e.key === "z" && !e.shiftKey) {
-            if (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA" && e.target.tagName !== "SELECT") {
+            if (!isTextInput) {
                 e.preventDefault();
                 undo();
                 return;
             }
         }
         if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
-            if (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA" && e.target.tagName !== "SELECT") {
+            if (!isTextInput) {
                 e.preventDefault();
                 redo();
                 return;
