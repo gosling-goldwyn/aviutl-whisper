@@ -801,22 +801,34 @@ class TestExporter:
         assert s2.max_chars_per_line == 30
 
     def test_detect_device_large_model(self):
-        """large-v3モデルの場合、GPU時はint8_float16が選択される。"""
+        """large-v3モデルの場合、GPU時はサポートされる最適な compute_type が選択される。"""
+        import ctranslate2
         from aviutl_whisper.models import _detect_device
         device, compute_type = _detect_device("large-v3")
         assert device in ("cuda", "cpu")
         if device == "cuda":
-            assert compute_type == "int8_float16"
+            cuda_types = ctranslate2.get_supported_compute_types("cuda")
+            if "int8_float16" in cuda_types:
+                assert compute_type == "int8_float16"
+            elif "float16" in cuda_types:
+                assert compute_type == "float16"
+            else:
+                assert compute_type == "int8"
         else:
             assert compute_type == "int8"
 
     def test_detect_device_medium_model(self):
-        """mediumモデルの場合、GPU時はfloat16が選択される。"""
+        """mediumモデルの場合、GPU時はサポートされる最適な compute_type が選択される。"""
+        import ctranslate2
         from aviutl_whisper.models import _detect_device
         device, compute_type = _detect_device("medium")
         assert device in ("cuda", "cpu")
         if device == "cuda":
-            assert compute_type == "float16"
+            cuda_types = ctranslate2.get_supported_compute_types("cuda")
+            if "float16" in cuda_types:
+                assert compute_type == "float16"
+            else:
+                assert compute_type == "int8"
         else:
             assert compute_type == "int8"
 
