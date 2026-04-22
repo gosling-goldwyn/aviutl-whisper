@@ -7,6 +7,15 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
+    <nav class="menu-bar">
+        <div class="menu-entry" id="menu-edit-entry">
+            <button class="menu-entry-btn">編集(E)</button>
+            <div class="menu-dropdown" id="menu-edit-dropdown">
+                <button id="menu-undo" class="menu-dropdown-item" disabled>元に戻す<span class="menu-shortcut">Ctrl+Z</span></button>
+                <button id="menu-redo" class="menu-dropdown-item" disabled>やり直し<span class="menu-shortcut">Ctrl+Y</span></button>
+            </div>
+        </div>
+    </nav>
     <header class="app-header">
         <h1>🎙️ aviutl-whisper</h1>
         <span class="subtitle">音声文字起こし＋話者分離ツール</span>

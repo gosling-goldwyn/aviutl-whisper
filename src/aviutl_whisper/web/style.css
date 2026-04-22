@@ -10,6 +10,7 @@
     --success: #2ecc71;
     --radius: 8px;
     --header-h: 48px;
+    --menubar-h: 28px;
 }
 
 * {
@@ -25,6 +26,87 @@ body {
     line-height: 1.6;
     min-height: 100vh;
     overflow: hidden;
+}
+
+/* ====== メニューバー ====== */
+.menu-bar {
+    height: var(--menubar-h);
+    display: flex;
+    align-items: stretch;
+    background: #111128;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    user-select: none;
+    position: relative;
+    z-index: 200;
+}
+
+.menu-entry {
+    position: relative;
+}
+
+.menu-entry-btn {
+    height: 100%;
+    padding: 0 12px;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 0.8rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.menu-entry-btn:hover,
+.menu-entry.open .menu-entry-btn {
+    background: var(--bg-input);
+}
+
+.menu-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    min-width: 200px;
+    background: #1e1e3a;
+    border: 1px solid var(--border);
+    border-radius: 0 0 var(--radius) var(--radius);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    z-index: 300;
+    padding: 4px 0;
+}
+
+.menu-entry.open .menu-dropdown {
+    display: block;
+}
+
+.menu-dropdown-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+    padding: 6px 16px;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 0.82rem;
+    cursor: pointer;
+    text-align: left;
+    gap: 24px;
+}
+
+.menu-dropdown-item:hover:not(:disabled) {
+    background: var(--bg-input);
+}
+
+.menu-dropdown-item:disabled {
+    color: var(--text-muted);
+    cursor: default;
+}
+
+.menu-shortcut {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
 }
 
 /* ====== ヘッダー ====== */
@@ -53,7 +135,7 @@ body {
 .app-layout {
     display: grid;
     grid-template-columns: 360px 1fr;
-    height: calc(100vh - var(--header-h));
+    height: calc(100vh - var(--header-h) - var(--menubar-h));
 }
 
 .pane {

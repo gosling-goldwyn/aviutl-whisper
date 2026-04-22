@@ -1049,6 +1049,33 @@ class Api:
         self._last_segments.pop(index)
         return self._segments_response()
 
+    def restore_segments(self, segments_data: list):
+        """スナップショットからセグメントを復元する（Undo/Redo 用）。
+
+        Args:
+            segments_data: [{"start": float, "end": float, "text": str, "speaker": str}] の配列
+        """
+        if segments_data is None:
+            return {"success": False, "error": "セグメントデータがありません"}
+
+        try:
+            self._last_segments = [
+                transcriber.TranscriptionSegment(
+                    start=s["start"],
+                    end=s["end"],
+                    text=s["text"],
+                    speaker=s.get("speaker", "Speaker 1"),
+                )
+                for s in segments_data
+            ]
+        except Exception as e:
+            logger.exception("セグメント復元エラー")
+            return {"success": False, "error": str(e)}
+
+        # スナップショットはマッピング適用済みのため、マッピングをリセット
+        self._speaker_mapping = None
+        return self._segments_response()
+
     def merge_segments(self, index: int):
         """隣接する2セグメントを結合する。
 

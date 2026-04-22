@@ -11,6 +11,12 @@ let lastSpeakers = [];
 let currentMapping = {};
 let backgroundImage = "";
 
+// --- Undo/Redo ---
+const MAX_UNDO = 50;
+let undoStack = [];
+let redoStack = [];
+let pendingExoSnapshot = null;
+
 const DEFAULT_SPEAKER_COLORS = [
     "ffffff", "00ffff", "00ff00", "ff00ff",
     "ffff00", "ff8000", "8080ff", "80ff80",
@@ -63,8 +69,35 @@ function initEventListeners() {
         if (e.target === $("#transcription-modal")) closeTranscriptionModal();
     });
 
+    // メニューバー
+    const editEntry = $("#menu-edit-entry");
+    editEntry.querySelector(".menu-entry-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        editEntry.classList.toggle("open");
+    });
+    document.addEventListener("click", () => {
+        editEntry.classList.remove("open");
+    });
+    $("#menu-undo").addEventListener("click", () => { editEntry.classList.remove("open"); undo(); });
+    $("#menu-redo").addEventListener("click", () => { editEntry.classList.remove("open"); redo(); });
+
     // キーボードナビゲーション
     document.addEventListener("keydown", (e) => {
+        // Ctrl+Z / Ctrl+Y: INPUT/TEXTAREA/SELECT 上では発火しない
+        if (e.ctrlKey && e.key === "z" && !e.shiftKey) {
+            if (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA" && e.target.tagName !== "SELECT") {
+                e.preventDefault();
+                undo();
+                return;
+            }
+        }
+        if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
+            if (e.target.tagName !== "INPUT" && e.target.tagName !== "TEXTAREA" && e.target.tagName !== "SELECT") {
+                e.preventDefault();
+                redo();
+                return;
+            }
+        }
         if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
         if (previewSegments.length === 0) return;
         if (e.key === "ArrowLeft") { navigatePreview(-1); e.preventDefault(); }
@@ -229,6 +262,7 @@ function renderSpeakerTachie() {
     container.querySelectorAll(".btn-tachie-clear").forEach(btn => {
         btn.addEventListener("click", (e) => {
             const idx = parseInt(e.target.dataset.index);
+            pushUndo();
             tachieData[idx].file = "";
             const label = container.querySelector(`.tachie-file-name[data-index="${idx}"]`);
             if (label) label.textContent = "未選択";
@@ -251,6 +285,7 @@ async function selectTachieImage(speakerIndex) {
     try {
         const path = await pywebview.api.select_image_file();
         if (path) {
+            pushUndo();
             tachieData[speakerIndex].file = path;
             const label = document.querySelector(`.tachie-file-name[data-index="${speakerIndex}"]`);
             if (label) label.textContent = path.split(/[\\/]/).pop();
@@ -303,6 +338,7 @@ async function selectBackgroundImage() {
     try {
         const result = await pywebview.api.select_image_file();
         if (result) {
+            pushUndo();
             backgroundImage = result;
             const name = result.split(/[\\/]/).pop();
             $("#bg-image-name").textContent = name;
@@ -315,6 +351,7 @@ async function selectBackgroundImage() {
 }
 
 function clearBackgroundImage() {
+    pushUndo();
     backgroundImage = "";
     $("#bg-image-name").textContent = "未選択";
     autoSave();
@@ -415,6 +452,9 @@ function showResult(result) {
     $("#btn-save").disabled = false;
     $("#btn-save-project").disabled = false;
 
+    // 新しい文字起こし結果なので Undo 履歴をリセット
+    clearUndoHistory();
+
     // 話者マッピングUI
     lastSpeakers = result.speakers || [];
     if (lastSpeakers.length > 1) {
@@ -469,6 +509,9 @@ async function loadProject() {
             }
             return;
         }
+
+        // プロジェクト読み込み時は Undo 履歴をリセット
+        clearUndoHistory();
 
         // ファイル情報を復元
         selectedFile = result.source_file || null;
@@ -634,6 +677,7 @@ function swapSpeakers() {
 }
 
 async function applyMapping() {
+    pushUndo();
     const selects = document.querySelectorAll(".mapping-select");
     currentMapping = {};
     selects.forEach(sel => {
@@ -810,6 +854,9 @@ function setupAutoSave() {
     // 話者色・立ち絵
     $("#speaker-colors-list").addEventListener("input", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
     $("#speaker-tachie-list").addEventListener("input", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
+
+    // Undo トリガー設定
+    setupExoUndoListeners();
 }
 
 // --- ユーティリティ ---
@@ -1014,6 +1061,7 @@ function getKnownSpeakers() {
 
 async function applySegmentEdit() {
     if (previewSegments.length === 0) return;
+    pushUndo();
     const speaker = $("#seg-edit-speaker").value;
     const text = $("#seg-edit-text").value;
     const start = parseFloat($("#seg-edit-start").value);
@@ -1034,6 +1082,7 @@ async function applySegmentEdit() {
 }
 
 async function addSegment() {
+    pushUndo();
     let defaultStart = 0;
     let defaultEnd = 1;
     if (previewSegments.length > 0) {
@@ -1084,6 +1133,7 @@ async function deleteSegment() {
         return;
     }
     if (!confirm(`セグメント ${previewIndex + 1} を削除しますか？`)) return;
+    pushUndo();
 
     try {
         const res = await pywebview.api.delete_segment(previewIndex);
@@ -1106,6 +1156,7 @@ async function deleteSegment() {
 
 async function mergePrevSegment() {
     if (previewIndex <= 0) return;
+    pushUndo();
     try {
         const res = await pywebview.api.merge_segments(previewIndex - 1);
         if (res && res.success) {
@@ -1121,6 +1172,7 @@ async function mergePrevSegment() {
 
 async function mergeNextSegment() {
     if (previewIndex >= previewSegments.length - 1) return;
+    pushUndo();
     try {
         const res = await pywebview.api.merge_segments(previewIndex);
         if (res && res.success) {
@@ -1152,4 +1204,145 @@ function handleSegmentEditResponse(res) {
     updatePreviewNav();
     populateSegmentEditor();
     renderSegmentTable();
+}
+
+// ============================================================
+// Undo / Redo
+// ============================================================
+
+function captureSnapshot() {
+    return {
+        segments: JSON.parse(JSON.stringify(previewSegments)),
+        exoSettings: collectExoSettings(),
+        currentMapping: JSON.parse(JSON.stringify(currentMapping)),
+    };
+}
+
+function pushUndo() {
+    const snapshot = captureSnapshot();
+    undoStack.push(snapshot);
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack = [];
+    pendingExoSnapshot = null;
+    updateUndoRedoUI();
+}
+
+async function undo() {
+    if (undoStack.length === 0) return;
+    redoStack.push(captureSnapshot());
+    const snapshot = undoStack.pop();
+    await applySnapshot(snapshot);
+    updateUndoRedoUI();
+}
+
+async function redo() {
+    if (redoStack.length === 0) return;
+    undoStack.push(captureSnapshot());
+    const snapshot = redoStack.pop();
+    await applySnapshot(snapshot);
+    updateUndoRedoUI();
+}
+
+async function applySnapshot(snapshot) {
+    // 1. バックエンドのセグメントを復元
+    if (snapshot.segments && snapshot.segments.length > 0) {
+        try {
+            const res = await pywebview.api.restore_segments(snapshot.segments);
+            if (res && res.success) {
+                previewSegments = res.segments;
+            } else {
+                previewSegments = snapshot.segments;
+            }
+        } catch (e) {
+            console.error("セグメント復元エラー:", e);
+            previewSegments = snapshot.segments;
+        }
+    } else {
+        previewSegments = snapshot.segments || [];
+    }
+
+    // 2. 話者マッピングを復元
+    currentMapping = snapshot.currentMapping || {};
+
+    // 3. exo設定・色・立ち絵・背景を復元
+    if (snapshot.exoSettings) {
+        applyExoSettingsToUI(snapshot.exoSettings);
+        backgroundImage = snapshot.exoSettings.background_image || "";
+        if (snapshot.exoSettings.speaker_images?.length > 0) {
+            tachieData = snapshot.exoSettings.speaker_images.map(img => ({
+                file: img.file || "",
+                x: img.x || 0,
+                y: img.y || 0,
+                scale: img.scale || 100,
+            }));
+        }
+        renderSpeakerTachie();
+    }
+
+    // 4. UIを更新
+    previewIndex = Math.min(previewIndex, Math.max(0, previewSegments.length - 1));
+    renderPreviewImage();
+    updatePreviewNav();
+    populateSegmentEditor();
+    renderSegmentTable();
+}
+
+function updateUndoRedoUI() {
+    const undoBtn = $("#menu-undo");
+    const redoBtn = $("#menu-redo");
+    if (undoBtn) undoBtn.disabled = undoStack.length === 0;
+    if (redoBtn) redoBtn.disabled = redoStack.length === 0;
+}
+
+function clearUndoHistory() {
+    undoStack = [];
+    redoStack = [];
+    pendingExoSnapshot = null;
+    updateUndoRedoUI();
+}
+
+// exo設定変更の Undo トリガー設定
+function setupExoUndoListeners() {
+    // focusin: スナップショット保存
+    // change: undoスタックに積む
+    const onFocusin = () => {
+        if (!pendingExoSnapshot) {
+            pendingExoSnapshot = captureSnapshot();
+        }
+    };
+    const onChangePush = () => {
+        if (pendingExoSnapshot) {
+            undoStack.push(pendingExoSnapshot);
+            if (undoStack.length > MAX_UNDO) undoStack.shift();
+            redoStack = [];
+            pendingExoSnapshot = null;
+            updateUndoRedoUI();
+        }
+    };
+
+    const exoSection = $("#exo-settings-section");
+    if (exoSection) {
+        exoSection.addEventListener("focusin", onFocusin);
+        exoSection.addEventListener("change", onChangePush);
+        // カラーピッカーはpointerdownで事前キャプチャ
+        exoSection.addEventListener("pointerdown", onFocusin);
+    }
+
+    const colorsSection = $("#speaker-colors-section");
+    if (colorsSection) {
+        colorsSection.addEventListener("focusin", onFocusin);
+        colorsSection.addEventListener("change", onChangePush);
+        colorsSection.addEventListener("pointerdown", onFocusin);
+    }
+
+    const tachieSection = $("#speaker-tachie-section");
+    if (tachieSection) {
+        tachieSection.addEventListener("focusin", onFocusin);
+        tachieSection.addEventListener("change", onChangePush);
+    }
+
+    const bgSection = $("#bg-section");
+    if (bgSection) {
+        bgSection.addEventListener("focusin", onFocusin);
+    }
 }
