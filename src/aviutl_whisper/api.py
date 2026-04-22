@@ -1049,6 +1049,36 @@ class Api:
         self._last_segments.pop(index)
         return self._segments_response()
 
+    def merge_segments(self, index: int):
+        """隣接する2セグメントを結合する。
+
+        index が前側セグメント、index+1 が後側セグメント。
+        両者の話者が同一の場合のみ結合を許可する。
+        結合後: start=前.start, end=後.end, text=前.text+"\n"+後.text
+        """
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+        self._bake_mapping()
+        if index < 0 or index + 1 >= len(self._last_segments):
+            return {"success": False, "error": "無効なインデックス"}
+
+        seg_a = self._last_segments[index]
+        seg_b = self._last_segments[index + 1]
+        if (seg_a.speaker or "Speaker 1") != (seg_b.speaker or "Speaker 1"):
+            return {"success": False, "error": "話者が異なるセグメントは結合できません"}
+
+        merged = transcriber.TranscriptionSegment(
+            start=seg_a.start,
+            end=seg_b.end,
+            text=seg_a.text + "\n" + seg_b.text,
+            speaker=seg_a.speaker,
+        )
+        self._last_segments[index] = merged
+        self._last_segments.pop(index + 1)
+        resp = self._segments_response()
+        resp["merged_index"] = index
+        return resp
+
     def get_preview_segments(self, speaker_mapping: dict | None = None):
         """プレビュー用のセグメント一覧を返す（マッピング適用済み）。"""
         if not self._last_segments:

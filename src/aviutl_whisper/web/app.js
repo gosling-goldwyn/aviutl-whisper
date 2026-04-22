@@ -47,6 +47,8 @@ function initEventListeners() {
     $("#btn-seg-apply").addEventListener("click", applySegmentEdit);
     $("#btn-seg-play").addEventListener("click", playSegmentAudio);
     $("#btn-seg-add").addEventListener("click", addSegment);
+    $("#btn-seg-merge-prev").addEventListener("click", mergePrevSegment);
+    $("#btn-seg-merge-next").addEventListener("click", mergeNextSegment);
     $("#btn-seg-delete").addEventListener("click", deleteSegment);
     $("#btn-load-project").addEventListener("click", loadProject);
     $("#btn-save-project").addEventListener("click", saveProject);
@@ -989,6 +991,12 @@ function populateSegmentEditor() {
     $("#seg-edit-start").value = seg.start.toFixed(2);
     $("#seg-edit-end").value = seg.end.toFixed(2);
     $("#seg-edit-text").value = seg.text;
+
+    const curSpeaker = seg.speaker || "Speaker 1";
+    const prevSeg = previewIndex > 0 ? previewSegments[previewIndex - 1] : null;
+    const nextSeg = previewIndex < previewSegments.length - 1 ? previewSegments[previewIndex + 1] : null;
+    $("#btn-seg-merge-prev").disabled = !(prevSeg && (prevSeg.speaker || "Speaker 1") === curSpeaker);
+    $("#btn-seg-merge-next").disabled = !(nextSeg && (nextSeg.speaker || "Speaker 1") === curSpeaker);
 }
 
 function getKnownSpeakers() {
@@ -1093,6 +1101,36 @@ async function deleteSegment() {
         }
     } catch (e) {
         console.error("セグメント削除エラー:", e);
+    }
+}
+
+async function mergePrevSegment() {
+    if (previewIndex <= 0) return;
+    try {
+        const res = await pywebview.api.merge_segments(previewIndex - 1);
+        if (res && res.success) {
+            previewIndex = res.merged_index;
+            handleSegmentEditResponse(res);
+        } else {
+            alert("結合エラー: " + (res?.error || "不明"));
+        }
+    } catch (e) {
+        console.error("セグメント結合エラー:", e);
+    }
+}
+
+async function mergeNextSegment() {
+    if (previewIndex >= previewSegments.length - 1) return;
+    try {
+        const res = await pywebview.api.merge_segments(previewIndex);
+        if (res && res.success) {
+            previewIndex = res.merged_index;
+            handleSegmentEditResponse(res);
+        } else {
+            alert("結合エラー: " + (res?.error || "不明"));
+        }
+    } catch (e) {
+        console.error("セグメント結合エラー:", e);
     }
 }
 
