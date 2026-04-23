@@ -11,6 +11,10 @@ let lastSpeakers = [];
 let currentMapping = {};
 let backgroundImage = "";
 
+// --- セグメントテキスト編集セッション管理 ---
+let _segTextEditStarted = false;
+let _segTextDebounceTimer = null;
+
 // --- プロジェクト状態 ---
 let isDirty = false;
 
@@ -69,6 +73,22 @@ function initEventListeners() {
     $("#btn-next-seg").addEventListener("click", () => navigatePreview(1));
     $("#btn-seg-apply").addEventListener("click", applySegmentEdit);
     $("#btn-seg-play").addEventListener("click", playSegmentAudio);
+
+    // テキストボックスの変更を自動でプレビューに反映
+    const segTextEl = $("#seg-edit-text");
+    segTextEl.addEventListener("focus", () => {
+        if (!_segTextEditStarted) {
+            _segTextEditStarted = true;
+            pushUndo();
+        }
+    });
+    segTextEl.addEventListener("input", () => {
+        clearTimeout(_segTextDebounceTimer);
+        _segTextDebounceTimer = setTimeout(() => applySegmentEdit(true), 300);
+    });
+    segTextEl.addEventListener("blur", () => {
+        _segTextEditStarted = false;
+    });
     $("#btn-seg-add").addEventListener("click", addSegment);
     $("#btn-seg-merge-prev").addEventListener("click", mergePrevSegment);
     $("#btn-seg-merge-next").addEventListener("click", mergeNextSegment);
@@ -1046,6 +1066,8 @@ async function renderPreviewImage() {
 function navigatePreview(delta) {
     const newIdx = previewIndex + delta;
     if (newIdx < 0 || newIdx >= previewSegments.length) return;
+    _segTextEditStarted = false;
+    clearTimeout(_segTextDebounceTimer);
     previewIndex = newIdx;
     renderPreviewImage();
     updatePreviewNav();
@@ -1193,9 +1215,9 @@ function getKnownSpeakers() {
     return [...set].sort();
 }
 
-async function applySegmentEdit() {
+async function applySegmentEdit(skipUndo = false) {
     if (previewSegments.length === 0) return;
-    pushUndo();
+    if (!skipUndo) pushUndo();
     const speaker = $("#seg-edit-speaker").value;
     const text = $("#seg-edit-text").value;
     const start = parseFloat($("#seg-edit-start").value);

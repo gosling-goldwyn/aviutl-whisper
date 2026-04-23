@@ -1155,6 +1155,34 @@ class TestSegmentEditing:
         assert res["success"] is True
         assert len(api._last_segments) == 4
 
+    # --- テキスト自動プレビュー（逐次更新）関連 ---
+
+    def test_update_segment_text_incremental(self):
+        """テキストを逐次更新しても最終値が正しく反映される（自動プレビュー相当）。"""
+        api = self._make_api_with_segments()
+        for partial in ["こ", "こん", "こんに", "こんにちは世界"]:
+            res = api.update_segment(0, text=partial)
+            assert res["success"] is True
+            assert api._last_segments[0].text == partial
+        assert api._last_segments[0].text == "こんにちは世界"
+
+    def test_update_segment_text_incremental_response_segments(self):
+        """逐次更新のたびにレスポンスの segments に最新テキストが反映される。"""
+        api = self._make_api_with_segments()
+        for partial in ["A", "AB", "ABC"]:
+            res = api.update_segment(0, text=partial)
+            assert res["segments"][0]["text"] == partial
+
+    def test_update_segment_text_does_not_affect_other_segments(self):
+        """テキスト逐次更新で他セグメントに影響が出ない。"""
+        api = self._make_api_with_segments()
+        original_1 = api._last_segments[1].text
+        original_2 = api._last_segments[2].text
+        api.update_segment(0, text="変更")
+        api.update_segment(0, text="再変更")
+        assert api._last_segments[1].text == original_1
+        assert api._last_segments[2].text == original_2
+
 
 class TestSubtitleRendering:
     """字幕画像レンダリングのテスト。"""
