@@ -11,6 +11,23 @@ let lastSpeakers = [];
 let currentMapping = {};
 let backgroundImage = "";
 
+// --- プロジェクト状態 ---
+let isDirty = false;
+
+function markDirty() {
+    isDirty = true;
+    try { pywebview.api.mark_dirty(); } catch (e) { /* API未準備時は無視 */ }
+}
+
+function clearDirty() {
+    isDirty = false;
+}
+
+function enableSaveMenuItems() {
+    $("#menu-save-project").disabled = false;
+    $("#menu-save-project-as").disabled = false;
+}
+
 // --- Undo/Redo ---
 const MAX_UNDO = 50;
 let undoStack = [];
@@ -56,7 +73,7 @@ function initEventListeners() {
     $("#btn-seg-merge-prev").addEventListener("click", mergePrevSegment);
     $("#btn-seg-merge-next").addEventListener("click", mergeNextSegment);
     $("#btn-seg-delete").addEventListener("click", deleteSegment);
-    $("#btn-load-project").addEventListener("click", loadProject);
+    $("#btn-load-project").addEventListener("click", loadProjectWithCheck);
     $("#btn-save-project").addEventListener("click", saveProject);
     $("#diarization-method").addEventListener("change", updateHfTokenVisibility);
     $("#num-speakers").addEventListener("change", () => {
@@ -70,6 +87,18 @@ function initEventListeners() {
     });
 
     // メニューバー
+    const fileEntry = $("#menu-file-entry");
+    fileEntry.querySelector(".menu-entry-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        fileEntry.classList.toggle("open");
+    });
+    document.addEventListener("click", () => {
+        fileEntry.classList.remove("open");
+    });
+    $("#menu-open-project").addEventListener("click", () => { fileEntry.classList.remove("open"); loadProjectWithCheck(); });
+    $("#menu-save-project").addEventListener("click", () => { fileEntry.classList.remove("open"); saveProject(); });
+    $("#menu-save-project-as").addEventListener("click", () => { fileEntry.classList.remove("open"); saveProjectAs(); });
+
     const editEntry = $("#menu-edit-entry");
     editEntry.querySelector(".menu-entry-btn").addEventListener("click", (e) => {
         e.stopPropagation();
@@ -103,6 +132,21 @@ function initEventListeners() {
                 redo();
                 return;
             }
+        }
+        if (e.ctrlKey && !e.shiftKey && e.key === "o") {
+            e.preventDefault();
+            loadProjectWithCheck();
+            return;
+        }
+        if (e.ctrlKey && e.shiftKey && (e.key === "s" || e.key === "S")) {
+            e.preventDefault();
+            saveProjectAs();
+            return;
+        }
+        if (e.ctrlKey && !e.shiftKey && (e.key === "s" || e.key === "S")) {
+            e.preventDefault();
+            saveProject();
+            return;
         }
         if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
         if (previewSegments.length === 0) return;
@@ -348,6 +392,7 @@ async function selectBackgroundImage() {
             backgroundImage = result;
             const name = result.split(/[\\/]/).pop();
             $("#bg-image-name").textContent = name;
+            markDirty();
             autoSave();
             schedulePreviewRedraw();
         }
@@ -360,6 +405,7 @@ function clearBackgroundImage() {
     pushUndo();
     backgroundImage = "";
     $("#bg-image-name").textContent = "未選択";
+    markDirty();
     autoSave();
     schedulePreviewRedraw();
 }
@@ -460,6 +506,8 @@ function showResult(result) {
 
     // 新しい文字起こし結果なので Undo 履歴をリセット
     clearUndoHistory();
+    markDirty();
+    enableSaveMenuItems();
 
     // 話者マッピングUI
     lastSpeakers = result.speakers || [];
@@ -488,15 +536,19 @@ async function saveResult() {
 }
 
 // --- プロジェクト保存・読み込み ---
+function _collectProjectData() {
+    return {
+        source_file: selectedFile || "",
+        exo_settings: collectExoSettings(),
+        preview_index: previewIndex,
+    };
+}
+
 async function saveProject() {
     try {
-        const projectData = {
-            source_file: selectedFile || "",
-            exo_settings: collectExoSettings(),
-            preview_index: previewIndex,
-        };
-        const result = await pywebview.api.save_project(projectData);
+        const result = await pywebview.api.save_project(_collectProjectData());
         if (result && result.success) {
+            clearDirty();
             alert("プロジェクトを保存しました: " + result.path);
         } else if (result && result.error && result.error !== "キャンセルされました") {
             alert("保存エラー: " + result.error);
@@ -504,6 +556,57 @@ async function saveProject() {
     } catch (e) {
         alert("プロジェクト保存エラー: " + e);
     }
+}
+
+async function saveProjectAs() {
+    try {
+        const result = await pywebview.api.save_project_as(_collectProjectData());
+        if (result && result.success) {
+            clearDirty();
+            alert("プロジェクトを保存しました: " + result.path);
+        } else if (result && result.error && result.error !== "キャンセルされました") {
+            alert("保存エラー: " + result.error);
+        }
+    } catch (e) {
+        alert("プロジェクト保存エラー: " + e);
+    }
+}
+
+function showSaveConfirmDialog(message, onYes, onNo, onCancel) {
+    $("#save-confirm-message").textContent = message;
+    show($("#save-confirm-modal"));
+
+    function cleanup() { hide($("#save-confirm-modal")); }
+
+    $("#btn-confirm-yes").onclick = () => { cleanup(); onYes(); };
+    $("#btn-confirm-no").onclick = () => { cleanup(); onNo(); };
+    $("#btn-confirm-cancel").onclick = () => { cleanup(); if (onCancel) onCancel(); };
+}
+
+async function loadProjectWithCheck() {
+    if (!isDirty) {
+        await loadProject();
+        return;
+    }
+    showSaveConfirmDialog(
+        "変更が保存されていません。プロジェクトを開く前に保存しますか？",
+        async () => {
+            // はい: 保存してから開く
+            const result = await pywebview.api.save_project(_collectProjectData());
+            if (result && result.success) {
+                clearDirty();
+                await loadProject();
+            } else if (result && result.error && result.error !== "キャンセルされました") {
+                alert("保存エラー: " + result.error);
+            }
+            // 保存キャンセル時は開かない
+        },
+        async () => {
+            // いいえ: 保存せずに開く
+            await loadProject();
+        },
+        null  // キャンセル: 何もしない
+    );
 }
 
 async function loadProject() {
@@ -518,11 +621,13 @@ async function loadProject() {
 
         // プロジェクト読み込み時は Undo 履歴をリセット
         clearUndoHistory();
+        clearDirty();
+        enableSaveMenuItems();
 
         // ファイル情報を復元
         selectedFile = result.source_file || null;
         if (selectedFile) {
-            const name = selectedFile.split(/[\\/]/).pop();
+            const name = selectedFile.split(/[\/]/).pop();
             $("#file-name").textContent = name;
         } else {
             $("#file-name").textContent = "未選択";
@@ -564,6 +669,29 @@ async function loadProject() {
     }
 }
 
+// Python の closing イベントから evaluate_js 経由で呼び出されるグローバル関数
+window._showCloseConfirm = function() {
+    showSaveConfirmDialog(
+        "変更が保存されていません。終了する前に保存しますか？",
+        async () => {
+            // はい: 保存してから終了
+            const result = await pywebview.api.save_project(_collectProjectData());
+            if (result && result.success) {
+                clearDirty();
+                await pywebview.api.force_close();
+            } else if (!result || !result.error || result.error === "キャンセルされました") {
+                // ファイル選択キャンセル時は終了しない
+            } else {
+                alert("保存エラー: " + result.error);
+            }
+        },
+        async () => {
+            // いいえ: 保存せずに終了
+            await pywebview.api.force_close();
+        },
+        null  // キャンセル: 何もしない (ウィンドウは既に閉じずに待機中)
+    );
+};
 function applyExoSettingsToUI(exo) {
     if (exo.font) $("#exo-font").value = exo.font;
     if (exo.font_size != null) $("#exo-font-size").value = exo.font_size;
@@ -702,7 +830,7 @@ async function applyMapping() {
         const exoSettings = collectExoSettings();
         const result = await pywebview.api.remap_speakers(currentMapping, "exo", exoSettings);
         if (result && result.success) {
-            // テキスト更新は不要（テーブルで表示）
+            markDirty();
         }
         initExoPreview();
     } catch (e) {
@@ -851,15 +979,15 @@ function setupAutoSave() {
         "exo-max-chars",
     ];
     for (const id of exoInputs) {
-        $(`#${id}`).addEventListener("change", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
+        $(`#${id}`).addEventListener("change", () => { markDirty(); scheduleAutoSave(); schedulePreviewRedraw(); });
     }
     for (const id of ["exo-bold", "exo-italic", "exo-soft-edge"]) {
-        $(`#${id}`).addEventListener("change", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
+        $(`#${id}`).addEventListener("change", () => { markDirty(); scheduleAutoSave(); schedulePreviewRedraw(); });
     }
 
     // 話者色・立ち絵
-    $("#speaker-colors-list").addEventListener("input", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
-    $("#speaker-tachie-list").addEventListener("input", () => { scheduleAutoSave(); schedulePreviewRedraw(); });
+    $("#speaker-colors-list").addEventListener("input", () => { markDirty(); scheduleAutoSave(); schedulePreviewRedraw(); });
+    $("#speaker-tachie-list").addEventListener("input", () => { markDirty(); scheduleAutoSave(); schedulePreviewRedraw(); });
 
     // Undo トリガー設定
     setupExoUndoListeners();
@@ -1206,6 +1334,7 @@ async function playSegmentAudio() {
 
 function handleSegmentEditResponse(res) {
     previewSegments = res.segments;
+    markDirty();
     renderPreviewImage();
     updatePreviewNav();
     populateSegmentEditor();

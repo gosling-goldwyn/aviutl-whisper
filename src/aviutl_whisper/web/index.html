@@ -8,6 +8,14 @@
 </head>
 <body>
     <nav class="menu-bar">
+        <div class="menu-entry" id="menu-file-entry">
+            <button class="menu-entry-btn">ファイル(F)</button>
+            <div class="menu-dropdown" id="menu-file-dropdown">
+                <button id="menu-open-project" class="menu-dropdown-item">プロジェクトを開く<span class="menu-shortcut">Ctrl+O</span></button>
+                <button id="menu-save-project" class="menu-dropdown-item" disabled>プロジェクトを保存<span class="menu-shortcut">Ctrl+S</span></button>
+                <button id="menu-save-project-as" class="menu-dropdown-item" disabled>プロジェクトを別名で保存<span class="menu-shortcut">Ctrl+Shift+S</span></button>
+            </div>
+        </div>
         <div class="menu-entry" id="menu-edit-entry">
             <button class="menu-entry-btn">編集(E)</button>
             <div class="menu-dropdown" id="menu-edit-dropdown">
@@ -231,6 +239,21 @@
                 </div>
             </section>
         </main>
+    </div>
+
+    <!-- ====== 保存確認ダイアログ (3択) ====== -->
+    <div id="save-confirm-modal" class="modal-overlay hidden">
+        <div class="modal-content modal-content-sm">
+            <div class="modal-header">
+                <h2 id="save-confirm-title">未保存の変更があります</h2>
+            </div>
+            <p id="save-confirm-message" class="modal-body-text"></p>
+            <div class="modal-footer modal-footer-3btn">
+                <button id="btn-confirm-yes" class="btn btn-primary">はい</button>
+                <button id="btn-confirm-no" class="btn">いいえ</button>
+                <button id="btn-confirm-cancel" class="btn">キャンセル</button>
+            </div>
+        </div>
     </div>
 
     <!-- ====== 文字起こし設定モーダル ====== -->

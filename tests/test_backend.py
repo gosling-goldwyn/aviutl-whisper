@@ -2034,3 +2034,449 @@ class TestProjectSaveLoad:
 
         data = json.loads(Path(proj_path).read_text(encoding="utf-8"))
         assert data["speaker_mapping"] == {"Speaker 1": 1, "Speaker 2": 0}
+
+
+# ============================================================
+# プロジェクト保存機能テスト
+# ============================================================
+
+class MockWindow:
+    """pywebviewのウィンドウを模したモッククラス。"""
+
+    def __init__(self):
+        self.title = "aviutl-whisper"
+        self.destroyed = False
+        self._save_dialog_result = None  # None = キャンセル, str = パス
+        self._open_dialog_result = None  # None = キャンセル, list[str] = パス群
+        self.last_eval_js = None
+        self.confirmation_dialog_called = False
+        self._eval_js_event = __import__("threading").Event()
+
+    def set_title(self, title: str):
+        self.title = title
+
+    def create_file_dialog(self, dialog_type, file_types=(), save_filename="", **kwargs):
+        import webview
+        if dialog_type == webview.FileDialog.SAVE:
+            return self._save_dialog_result
+        elif dialog_type == webview.FileDialog.OPEN:
+            return self._open_dialog_result
+        return None
+
+    def evaluate_js(self, expr: str):
+        self.last_eval_js = expr
+        self._eval_js_event.set()
+        return None
+
+    def create_confirmation_dialog(self, title: str, msg: str) -> bool:
+        self.confirmation_dialog_called = True
+        return False
+
+    def destroy(self):
+        self.destroyed = True
+
+
+class TestProjectPersistence:
+    """プロジェクト保存・読み込み機能のテスト。"""
+
+    def _make_api_with_segments(self):
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.transcriber import TranscriptionSegment, TranscriptionResult
+        api = Api()
+        api._last_segments = [
+            TranscriptionSegment(start=0.0, end=1.5, text="こんにちは", speaker="Speaker 1"),
+            TranscriptionSegment(start=1.5, end=3.0, text="元気ですか", speaker="Speaker 2"),
+        ]
+        api._last_result = TranscriptionResult(
+            segments=list(api._last_segments),
+            language="ja",
+            language_probability=0.9,
+        )
+        api._last_output_format = "text"
+        return api
+
+    def test_initial_dirty_state_is_false(self):
+        """新規Apiのdirtyが初期False。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        assert api._is_dirty is False
+
+    def test_initial_project_path_is_none(self):
+        """新規ApiのプロジェクトパスがNone。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        assert api._current_project_path is None
+
+    def test_mark_dirty_sets_flag(self):
+        """mark_dirty()でdirtyがTrue。"""
+        from aviutl_whisper.api import Api
+        api = Api()  # window なし
+        api.mark_dirty()
+        assert api._is_dirty is True
+
+    def test_is_project_dirty_reflects_state(self):
+        """is_project_dirty()が正しい値を返す。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        assert api.is_project_dirty() is False
+        api._is_dirty = True
+        assert api.is_project_dirty() is True
+
+    def test_save_project_to_file_creates_file(self, tmp_path):
+        """_save_project_to_fileでファイルが作成される。"""
+        api = self._make_api_with_segments()
+        path = str(tmp_path / "test.awproj")
+        data = {"segments": [{"start": 0.0, "end": 1.0, "text": "テスト", "speaker": "Speaker 1"}]}
+        result = api._save_project_to_file(data, path)
+        assert result["success"] is True
+        assert Path(path).exists()
+
+    def test_save_project_to_file_resets_dirty(self, tmp_path):
+        """保存後にdirtyがFalseになる。"""
+        api = self._make_api_with_segments()
+        api._is_dirty = True
+        path = str(tmp_path / "test.awproj")
+        data = {"segments": [{"start": 0.0, "end": 1.0, "text": "テスト", "speaker": "Speaker 1"}]}
+        api._save_project_to_file(data, path)
+        assert api._is_dirty is False
+
+    def test_save_project_to_file_correct_content(self, tmp_path):
+        """保存ファイルが正しいJSONを持つ。"""
+        import json as _json
+        api = self._make_api_with_segments()
+        path = str(tmp_path / "test.awproj")
+        data = {
+            "version": 1,
+            "segments": [{"start": 0.0, "end": 1.0, "text": "テスト", "speaker": "Speaker 1"}],
+        }
+        api._save_project_to_file(data, path)
+        loaded = _json.loads(Path(path).read_text(encoding="utf-8"))
+        assert loaded["version"] == 1
+        assert loaded["segments"][0]["text"] == "テスト"
+
+    def test_save_project_to_file_no_segments_fails(self, tmp_path):
+        """セグメントなしは失敗を返す。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        path = str(tmp_path / "test.awproj")
+        result = api._save_project_to_file({}, path)
+        assert result["success"] is False
+        assert "セグメント" in result["error"]
+
+    def test_save_project_to_file_sets_current_path(self, tmp_path):
+        """_save_project_to_file後に_current_project_pathが設定される。"""
+        api = self._make_api_with_segments()
+        path = str(tmp_path / "test.awproj")
+        data = {"segments": [{"start": 0.0, "end": 1.0, "text": "テスト", "speaker": "Speaker 1"}]}
+        api._save_project_to_file(data, path)
+        assert api._current_project_path == path
+
+    def test_save_project_uses_current_path(self, tmp_path):
+        """パスあり時はダイアログなしで上書き保存する。"""
+        api = self._make_api_with_segments()
+        path = str(tmp_path / "test.awproj")
+        api._current_project_path = path
+        project_data = {"source_file": "", "exo_settings": {}, "preview_index": 0}
+        result = api.save_project(project_data)
+        assert result["success"] is True
+        assert result["path"] == path
+
+    def test_save_project_as_sets_path(self, tmp_path):
+        """save_project_asでパスが設定される。"""
+        api = self._make_api_with_segments()
+        mock_win = MockWindow()
+        path = str(tmp_path / "saved.awproj")
+        mock_win._save_dialog_result = path
+        api.window = mock_win
+        project_data = {"source_file": "", "exo_settings": {}, "preview_index": 0}
+        result = api.save_project_as(project_data)
+        assert result["success"] is True
+        assert api._current_project_path == path
+
+    def test_save_project_as_cancel(self):
+        """save_project_asでキャンセル時は失敗を返す。"""
+        api = self._make_api_with_segments()
+        mock_win = MockWindow()
+        mock_win._save_dialog_result = None
+        api.window = mock_win
+        project_data = {"source_file": "", "exo_settings": {}, "preview_index": 0}
+        result = api.save_project_as(project_data)
+        assert result["success"] is False
+        assert result["error"] == "キャンセルされました"
+
+    def test_load_project_sets_current_path(self, tmp_path):
+        """load_project後に_current_project_pathが設定される。"""
+        import json as _json
+        from aviutl_whisper.api import Api
+        api = Api()
+        mock_win = MockWindow()
+        path = str(tmp_path / "test.awproj")
+        _json.dump({
+            "version": 1,
+            "segments": [{"start": 0.0, "end": 1.5, "text": "テスト", "speaker": "Speaker 1"}],
+            "language": "ja",
+            "source_file": "",
+            "speaker_mapping": None,
+            "exo_settings": {},
+            "preview_index": 0,
+        }, Path(path).open("w", encoding="utf-8"), ensure_ascii=False)
+        mock_win._open_dialog_result = [path]
+        api.window = mock_win
+        result = api.load_project()
+        assert result["success"] is True
+        assert api._current_project_path == path
+
+    def test_load_project_resets_dirty(self, tmp_path):
+        """load_project後にdirtyがFalse。"""
+        import json as _json
+        from aviutl_whisper.api import Api
+        api = Api()
+        api._is_dirty = True
+        mock_win = MockWindow()
+        path = str(tmp_path / "test.awproj")
+        _json.dump({
+            "version": 1,
+            "segments": [{"start": 0.0, "end": 1.5, "text": "テスト", "speaker": "Speaker 1"}],
+            "language": "ja",
+            "source_file": "",
+            "speaker_mapping": None,
+            "exo_settings": {},
+            "preview_index": 0,
+        }, Path(path).open("w", encoding="utf-8"), ensure_ascii=False)
+        mock_win._open_dialog_result = [path]
+        api.window = mock_win
+        api.load_project()
+        assert api._is_dirty is False
+
+    def test_update_segment_marks_dirty(self):
+        """update_segmentでdirtyがTrue。"""
+        api = self._make_api_with_segments()
+        assert api._is_dirty is False
+        api.update_segment(0, text="さようなら")
+        assert api._is_dirty is True
+
+    def test_add_segment_marks_dirty(self):
+        """add_segmentでdirtyがTrue。"""
+        api = self._make_api_with_segments()
+        assert api._is_dirty is False
+        api.add_segment(3.0, 4.0, "新しいセグメント")
+        assert api._is_dirty is True
+
+    def test_delete_segment_marks_dirty(self):
+        """delete_segmentでdirtyがTrue。"""
+        api = self._make_api_with_segments()
+        assert api._is_dirty is False
+        api.delete_segment(0)
+        assert api._is_dirty is True
+
+    def test_restore_segments_marks_dirty(self):
+        """restore_segmentsでdirtyがTrue。"""
+        api = self._make_api_with_segments()
+        assert api._is_dirty is False
+        segments_data = [{"start": 0.0, "end": 1.0, "text": "復元", "speaker": "Speaker 1"}]
+        api.restore_segments(segments_data)
+        assert api._is_dirty is True
+
+    def test_merge_segments_marks_dirty(self):
+        """merge_segmentsでdirtyがTrue。"""
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.transcriber import TranscriptionSegment, TranscriptionResult
+        api = Api()
+        api._last_segments = [
+            TranscriptionSegment(start=0.0, end=1.5, text="こんにちは", speaker="Speaker 1"),
+            TranscriptionSegment(start=1.5, end=3.0, text="元気ですか", speaker="Speaker 1"),
+        ]
+        api._last_result = TranscriptionResult(
+            segments=list(api._last_segments), language="ja", language_probability=0.9
+        )
+        api._last_output_format = "text"
+        assert api._is_dirty is False
+        api.merge_segments(0)
+        assert api._is_dirty is True
+
+    def test_force_close_sets_skip_flag(self):
+        """force_closeで_skip_close_dialogがTrue。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        mock_win = MockWindow()
+        api.window = mock_win
+        api.force_close()
+        assert api._skip_close_dialog is True
+        assert mock_win.destroyed is True
+
+    def test_update_window_title_no_window(self):
+        """windowなしで_update_window_titleが例外なく動作する。"""
+        from aviutl_whisper.api import Api
+        api = Api()  # window = None
+        api._update_window_title()  # should not raise
+
+    def test_update_window_title_dirty(self):
+        """dirtyでタイトルに*が付く。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        mock_win = MockWindow()
+        api.window = mock_win
+        api._is_dirty = True
+        api._update_window_title()
+        assert mock_win.title.startswith("*")
+
+    def test_update_window_title_with_project(self):
+        """プロジェクト名がタイトルに含まれる。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        mock_win = MockWindow()
+        api.window = mock_win
+        api._current_project_path = "/path/to/myproject.awproj"
+        api._update_window_title()
+        assert "myproject" in mock_win.title
+
+    def test_window_title_clean_after_save(self, tmp_path):
+        """保存後に*が消える。"""
+        api = self._make_api_with_segments()
+        mock_win = MockWindow()
+        api.window = mock_win
+        api._is_dirty = True
+        api._update_window_title()
+        assert mock_win.title.startswith("*")
+
+        path = str(tmp_path / "test.awproj")
+        data = {"segments": [{"start": 0.0, "end": 1.0, "text": "テスト", "speaker": "Speaker 1"}]}
+        api._save_project_to_file(data, path)
+        assert not mock_win.title.startswith("*")
+
+    def test_save_project_to_file_permission_error(self, tmp_path):
+        """PermissionError時はエラーメッセージを返し、dirty状態は変更しない。"""
+        from unittest.mock import patch
+        api = self._make_api_with_segments()
+        api._is_dirty = True
+        path = str(tmp_path / "locked.awproj")
+        data = {"segments": [{"start": 0.0, "end": 1.0, "text": "テスト", "speaker": "Speaker 1"}]}
+        with patch("aviutl_whisper.api.Path.write_text", side_effect=PermissionError("locked")):
+            result = api._save_project_to_file(data, path)
+        assert result["success"] is False
+        assert "権限" in result["error"]
+        assert api._is_dirty is True  # dirty状態は変更されない
+
+    def test_save_project_to_file_os_error(self, tmp_path):
+        """OSError時はエラーメッセージを返し、dirty状態は変更しない。"""
+        from unittest.mock import patch
+        api = self._make_api_with_segments()
+        api._is_dirty = True
+        path = str(tmp_path / "locked.awproj")
+        data = {"segments": [{"start": 0.0, "end": 1.0, "text": "テスト", "speaker": "Speaker 1"}]}
+        with patch("aviutl_whisper.api.Path.write_text", side_effect=OSError("disk full")):
+            result = api._save_project_to_file(data, path)
+        assert result["success"] is False
+        assert "書き込み" in result["error"]
+        assert api._is_dirty is True  # dirty状態は変更されない
+
+
+# ============================================================
+# on_closing ハンドラの動作テスト (Phase 2: 3択ダイアログ / Phase 3: スレッド化)
+# ============================================================
+
+class TestOnClosingBehavior:
+    """on_closing がJSダイアログに委譲する動作のテスト。"""
+
+    def _make_on_closing(self, api, window):
+        """app.py の on_closing クロージャを再現する (Phase 3: threading版)。"""
+        import threading
+
+        def on_closing():
+            if api._skip_close_dialog:
+                return
+            if not api._is_dirty:
+                return
+            threading.Thread(
+                target=lambda: window.evaluate_js(
+                    "window._showCloseConfirm && window._showCloseConfirm()"
+                ),
+                daemon=True,
+            ).start()
+            return False
+
+        return on_closing
+
+    def test_on_closing_not_dirty_allows_close(self):
+        """未変更の場合は閉じることを許可 (Noneを返す)。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        mock_win = MockWindow()
+        on_closing = self._make_on_closing(api, mock_win)
+        result = on_closing()
+        assert result is None
+        assert mock_win.last_eval_js is None
+
+    def test_on_closing_skip_flag_allows_close(self):
+        """_skip_close_dialog=True の場合は閉じることを許可。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        api._is_dirty = True
+        api._skip_close_dialog = True
+        mock_win = MockWindow()
+        on_closing = self._make_on_closing(api, mock_win)
+        result = on_closing()
+        assert result is None
+        assert mock_win.last_eval_js is None
+
+    def test_on_closing_dirty_cancels_close(self):
+        """dirty状態では終了をキャンセル (Falseを返す)。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        api._is_dirty = True
+        mock_win = MockWindow()
+        on_closing = self._make_on_closing(api, mock_win)
+        result = on_closing()
+        assert result is False
+
+    def test_on_closing_dirty_triggers_js_dialog(self):
+        """dirty状態では別スレッドから JS の _showCloseConfirm を呼び出す。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        api._is_dirty = True
+        mock_win = MockWindow()
+        on_closing = self._make_on_closing(api, mock_win)
+        on_closing()
+        # スレッドが evaluate_js を呼ぶまで待つ (最大1秒)
+        called = mock_win._eval_js_event.wait(timeout=1.0)
+        assert called, "evaluate_js がタイムアウト前に呼ばれなかった"
+        assert mock_win.last_eval_js is not None
+        assert "_showCloseConfirm" in mock_win.last_eval_js
+
+    def test_on_closing_dirty_returns_false_immediately(self):
+        """dirty状態では evaluate_js の完了を待たずすぐに False を返す (デッドロック回避)。"""
+        import threading
+        from unittest.mock import patch, MagicMock
+        from aviutl_whisper.api import Api
+        api = Api()
+        api._is_dirty = True
+        mock_win = MockWindow()
+        on_closing = self._make_on_closing(api, mock_win)
+
+        created_threads = []
+        original_init = threading.Thread.__init__
+
+        def capturing_init(self_t, *args, **kwargs):
+            original_init(self_t, *args, **kwargs)
+            created_threads.append(self_t)
+
+        with patch.object(threading.Thread, "__init__", capturing_init):
+            result = on_closing()
+
+        # スレッドが生成され即座に False が返る
+        assert result is False
+        assert len(created_threads) >= 1
+        # スレッド完了を待ちつつ evaluate_js が呼ばれることも確認
+        mock_win._eval_js_event.wait(timeout=1.0)
+        assert "_showCloseConfirm" in (mock_win.last_eval_js or "")
+
+    def test_on_closing_dirty_does_not_call_python_dialog(self):
+        """dirty状態でも Python の create_confirmation_dialog を使わない。"""
+        from aviutl_whisper.api import Api
+        api = Api()
+        api._is_dirty = True
+        mock_win = MockWindow()
+        on_closing = self._make_on_closing(api, mock_win)
+        on_closing()
+        mock_win._eval_js_event.wait(timeout=1.0)
+        assert mock_win.confirmation_dialog_called is False

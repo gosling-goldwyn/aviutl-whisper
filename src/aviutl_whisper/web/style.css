@@ -898,6 +898,20 @@ input[type="color"] {
     justify-content: flex-end;
 }
 
+.modal-content-sm {
+    max-width: 360px;
+}
+
+.modal-body-text {
+    margin: 0 0 4px;
+    line-height: 1.5;
+    color: var(--text);
+}
+
+.modal-footer-3btn {
+    gap: 8px;
+}
+
 /* ====== フッター ====== */
 footer {
     text-align: center;

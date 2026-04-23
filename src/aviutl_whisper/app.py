@@ -2,6 +2,7 @@
 
 import logging
 import sys
+import threading
 from importlib import resources
 from pathlib import Path
 
@@ -75,6 +76,30 @@ def main():
         min_size=(640, 500),
     )
     api.set_window(window)
+
+    def on_closing():
+        """アプリ終了前に未保存の変更を確認する。
+
+        dirty状態の場合は終了をキャンセルし、JSに3択ダイアログを表示させる。
+        """
+        if api._skip_close_dialog:
+            return  # 強制終了 → 許可
+
+        if not api._is_dirty:
+            return  # 変更なし → 許可
+
+        # dirty → 終了をキャンセルし JS 側のダイアログを別スレッドで呼び出す
+        # NOTE: on_closing は GUIスレッドで発火するため、evaluate_js を同スレッドで
+        #       同期呼び出しするとデッドロックになる。threading.Thread で回避する。
+        threading.Thread(
+            target=lambda: window.evaluate_js(
+                "window._showCloseConfirm && window._showCloseConfirm()"
+            ),
+            daemon=True,
+        ).start()
+        return False
+
+    window.events.closing += on_closing
 
     webview.start(
         debug="--debug" in sys.argv,

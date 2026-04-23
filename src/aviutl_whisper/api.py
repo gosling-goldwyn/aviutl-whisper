@@ -390,9 +390,43 @@ class Api:
         self._speaker_mapping: dict[str, int] | None = None
         self._exo_settings: exporter.ExoSettings | None = None
         self._system_fonts: list[str] | None = None
+        self._is_dirty: bool = False
+        self._current_project_path: str | None = None
+        self._skip_close_dialog: bool = False
 
     def set_window(self, window: webview.Window):
         self.window = window
+
+    # --- プロジェクト状態管理 ---
+
+    def mark_dirty(self):
+        """プロジェクトに未保存の変更があることをマークする。"""
+        self._is_dirty = True
+        self._update_window_title()
+
+    def is_project_dirty(self) -> bool:
+        """プロジェクトに未保存の変更があるか返す。"""
+        return self._is_dirty
+
+    def force_close(self):
+        """確認ダイアログをスキップしてウィンドウを閉じる。"""
+        self._skip_close_dialog = True
+        if self.window:
+            self.window.destroy()
+
+    def _update_window_title(self):
+        """現在のプロジェクト状態に基づいてウィンドウタイトルを更新する。"""
+        if not self.window:
+            return
+        base = "aviutl-whisper"
+        if self._current_project_path:
+            project_name = Path(self._current_project_path).stem
+            title = f"{base} - {project_name}"
+        else:
+            title = base
+        if self._is_dirty:
+            title = f"*{title}"
+        self.window.set_title(title)
 
     def select_file(self):
         """ファイル選択ダイアログを開く。"""
@@ -816,29 +850,40 @@ class Api:
 
     # --- プロジェクト保存・読み込み ---
 
-    def save_project(self, project_data: dict):
-        """プロジェクトファイル (.awproj) に保存する。
+    def _save_project_to_file(self, data: dict, path: str) -> dict:
+        """プロジェクトデータを指定パスに書き出す内部ヘルパー。
 
-        フロントエンドから source_file / exo_settings / preview_index を受け取り、
-        バックエンドが保持するセグメント・マッピング情報と合わせてJSONで書き出す。
+        ダイアログを開かず、渡されたパスに直接保存する。
+        保存成功時は _is_dirty をリセットし、ウィンドウタイトルを更新する。
         """
-        result = self.window.create_file_dialog(
-            webview.FileDialog.SAVE,
-            file_types=("プロジェクトファイル (*.awproj)",),
-            save_filename="project.awproj",
-        )
-        if not result:
-            return {"success": False, "error": "キャンセルされました"}
-
-        path = result if isinstance(result, str) else result[0]
-
-        if not self._last_segments:
+        if not data.get("segments"):
             return {"success": False, "error": "保存するセグメントがありません"}
+        try:
+            Path(path).write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            self._is_dirty = False
+            self._current_project_path = path
+            self._update_window_title()
+            return {"success": True, "path": path}
+        except PermissionError as e:
+            logger.exception("プロジェクト保存エラー (アクセス拒否)")
+            return {"success": False, "error": f"ファイルへの書き込み権限がありません: {e}"}
+        except OSError as e:
+            logger.exception("プロジェクト保存エラー (OS)")
+            return {"success": False, "error": f"ファイルの書き込みに失敗しました: {e}"}
+        except Exception as e:
+            logger.exception("プロジェクト保存エラー")
+            return {"success": False, "error": str(e)}
 
+    def _build_project_data(self, project_data: dict) -> dict | None:
+        """フロントエンドから受け取ったデータとバックエンド状態からプロジェクトデータを構築する。"""
+        if not self._last_segments:
+            return None
         mapping = self._speaker_mapping
         segments = _apply_speaker_mapping(self._last_segments, mapping)
-
-        data = {
+        return {
             "version": PROJECT_VERSION,
             "source_file": project_data.get("source_file", ""),
             "language": (
@@ -858,15 +903,40 @@ class Api:
             "preview_index": project_data.get("preview_index", 0),
         }
 
-        try:
-            Path(path).write_text(
-                json.dumps(data, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            return {"success": True, "path": path}
-        except Exception as e:
-            logger.exception("プロジェクト保存エラー")
-            return {"success": False, "error": str(e)}
+    def save_project(self, project_data: dict):
+        """プロジェクトファイル (.awproj) に保存する。
+
+        保存先パスが既知の場合は上書き保存する。
+        未設定の場合はダイアログを開いて保存先を選択する。
+        """
+        if self._current_project_path:
+            data = self._build_project_data(project_data)
+            if data is None:
+                return {"success": False, "error": "保存するセグメントがありません"}
+            return self._save_project_to_file(data, self._current_project_path)
+
+        return self.save_project_as(project_data)
+
+    def save_project_as(self, project_data: dict):
+        """プロジェクトファイル (.awproj) を別名で保存する。
+
+        常にダイアログを開いて保存先を選択する。
+        """
+        result = self.window.create_file_dialog(
+            webview.FileDialog.SAVE,
+            file_types=("プロジェクトファイル (*.awproj)",),
+            save_filename="project.awproj",
+        )
+        if not result:
+            return {"success": False, "error": "キャンセルされました"}
+
+        path = result if isinstance(result, str) else result[0]
+
+        data = self._build_project_data(project_data)
+        if data is None:
+            return {"success": False, "error": "保存するセグメントがありません"}
+
+        return self._save_project_to_file(data, path)
 
     def load_project(self):
         """プロジェクトファイル (.awproj) を読み込み、内部状態を復元する。"""
@@ -903,6 +973,9 @@ class Api:
 
         self._last_segments = segments
         self._speaker_mapping = data.get("speaker_mapping")
+        self._current_project_path = path
+        self._is_dirty = False
+        self._update_window_title()
 
         language = data.get("language", "")
         self._last_result = transcriber.TranscriptionResult(
@@ -1010,6 +1083,7 @@ class Api:
             text=text if text is not None else seg.text,
             speaker=speaker if speaker is not None else seg.speaker,
         )
+        self._is_dirty = True
         return self._segments_response()
 
     def add_segment(self, start: float, end: float, text: str,
@@ -1032,6 +1106,7 @@ class Api:
             insert_idx = i + 1
         self._last_segments.insert(insert_idx, new_seg)
 
+        self._is_dirty = True
         resp = self._segments_response()
         resp["inserted_index"] = insert_idx
         return resp
@@ -1047,6 +1122,7 @@ class Api:
             return {"success": False, "error": "最後のセグメントは削除できません"}
 
         self._last_segments.pop(index)
+        self._is_dirty = True
         return self._segments_response()
 
     def restore_segments(self, segments_data: list):
@@ -1074,6 +1150,7 @@ class Api:
 
         # スナップショットはマッピング適用済みのため、マッピングをリセット
         self._speaker_mapping = None
+        self._is_dirty = True
         return self._segments_response()
 
     def merge_segments(self, index: int):
@@ -1102,6 +1179,7 @@ class Api:
         )
         self._last_segments[index] = merged
         self._last_segments.pop(index + 1)
+        self._is_dirty = True
         resp = self._segments_response()
         resp["merged_index"] = index
         return resp
