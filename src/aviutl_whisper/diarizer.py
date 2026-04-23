@@ -2,12 +2,6 @@
 
 import logging
 
-import numpy as np
-import soundfile as sf
-import torch
-from sklearn.cluster import AgglomerativeClustering
-from sklearn.preprocessing import normalize
-
 from .transcriber import TranscriptionSegment
 
 logger = logging.getLogger(__name__)
@@ -47,6 +41,11 @@ def assign_speakers(
     Returns:
         話者ラベルが割り当てられたセグメントリスト
     """
+    import numpy as np
+    import soundfile as sf
+    import torch
+    from sklearn.preprocessing import normalize
+
     if not segments:
         return segments
 
@@ -123,17 +122,19 @@ def assign_speakers(
 
 def _extract_embeddings(
     model,
-    waveform: torch.Tensor,
+    waveform,
     sample_rate: int,
     segments: list[TranscriptionSegment],
     progress_callback=None,
-) -> list[tuple[int, np.ndarray]]:
+) -> list[tuple]:
     """各セグメントの話者埋め込みを抽出する。
 
     長いセグメント (> MAX_SEGMENT_FOR_EMBED秒) はサブウィンドウに分割して
     個別に埋め込みを抽出する。これにより、複数話者が含まれる長セグメントでの
     クラスタリング精度が向上する。
     """
+    import torch
+
     embeddings = []
     total = len(segments)
 
@@ -184,11 +185,13 @@ def _split_into_windows(
 
 
 def _cluster_speakers(
-    embeddings: np.ndarray,
+    embeddings,
     num_speakers: int | None = None,
     distance_threshold: float = DEFAULT_DISTANCE_THRESHOLD,
 ) -> list[int]:
     """埋め込みベクトルをクラスタリングして話者を分類する。"""
+    from sklearn.cluster import AgglomerativeClustering
+
     if len(embeddings) == 1:
         return [0]
 
@@ -210,12 +213,13 @@ def _cluster_speakers(
     return labels.tolist()
 
 
-def _estimate_threshold(embeddings: np.ndarray) -> float:
+def _estimate_threshold(embeddings) -> float:
     """ペアワイズ距離の分布から最適な閾値を自動推定する。
 
     距離のヒストグラムで最大のギャップ（谷）を探し、
     同一話者クラスタと異話者クラスタの境界を見つける。
     """
+    import numpy as np
     from sklearn.metrics.pairwise import cosine_distances
 
     if len(embeddings) < 3:
