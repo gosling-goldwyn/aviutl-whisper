@@ -37,8 +37,14 @@ packages = ["src/aviutl_whisper"]
 dev = [
     "pyinstaller>=6.0",
     "pytest>=8.0",
+    "playwright>=1.44",
+    "pytest-playwright>=0.5",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with -m 'not slow')",
+    "e2e: marks tests as end-to-end tests requiring the running app",
+]
