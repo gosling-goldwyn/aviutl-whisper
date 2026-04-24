@@ -1,0 +1,13 @@
+{
+  "segments": [
+    { "start": 0.0,  "end": 3.5,  "speaker": "Speaker 1", "text": "こんにちは、テストです。" },
+    { "start": 3.8,  "end": 7.2,  "speaker": "Speaker 2", "text": "はじめまして。よろしくお願いします。" },
+    { "start": 7.5,  "end": 12.0, "speaker": "Speaker 1", "text": "今日はよい天気ですね。" }
+  ],
+  "num_speakers": 2,
+  "language": "ja",
+  "speakers": [
+    { "name": "Speaker 1", "sample_text": "こんにちは、テストです。", "segment_count": 2, "first_start": 0.0, "first_end": 3.5 },
+    { "name": "Speaker 2", "sample_text": "はじめまして。よろしくお願いします。", "segment_count": 1, "first_start": 3.8, "first_end": 7.2 }
+  ]
+}

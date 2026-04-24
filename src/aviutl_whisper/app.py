@@ -1,6 +1,7 @@
 """pywebviewアプリケーション管理"""
 
 import logging
+import os
 import sys
 import threading
 from importlib import resources
@@ -67,6 +68,8 @@ def main():
     web_dir = get_web_dir()
     logger.info("Webアセットディレクトリ: %s", web_dir)
 
+    hidden = os.environ.get("AVIUTL_WHISPER_HIDDEN", "0") == "1"
+
     window = webview.create_window(
         title="aviutl-whisper",
         url=f"{web_dir}/index.html",
@@ -74,6 +77,7 @@ def main():
         width=800,
         height=720,
         min_size=(640, 500),
+        hidden=hidden,
     )
     api.set_window(window)
 
