@@ -69,9 +69,6 @@ def app_process(tmp_path_factory):
             f"within {APP_LAUNCH_TIMEOUT}s"
         )
 
-    # WebView2 の初期化バッファ
-    time.sleep(2)
-
     yield proc
 
     proc.terminate()
@@ -89,8 +86,17 @@ def _pw():
 
 @pytest.fixture(scope="session")
 def browser(app_process, _pw) -> Browser:
-    """CDP 経由で WebView2 に接続するブラウザフィクスチャ。"""
+    """CDP 経由で WebView2 に接続するブラウザフィクスチャ。
+
+    接続後、pywebview.api が利用可能になるまで待機する（初回のみ）。
+    CI 環境では WebView2 の初期化に時間がかかるため 60 秒タイムアウトを設定。
+    """
     b = _pw.chromium.connect_over_cdp(f"http://localhost:{REMOTE_DEBUG_PORT}")
+    pg = b.contexts[0].pages[0]
+    pg.wait_for_function(
+        "typeof pywebview !== 'undefined' && typeof pywebview.api !== 'undefined'",
+        timeout=60_000,
+    )
     yield b
     # CDPセッションを切断（WebView2 プロセスは app_process が終了させる）
     b.close()
@@ -105,13 +111,11 @@ def page(browser) -> Page:
     """pywebview API 準備完了済みのページを返すフィクスチャ。
 
     各テスト前にアプリ状態をリセットして前のテストの影響を排除する。
+    browser フィクスチャがセッション開始時に pywebview の準備を保証済みなので
+    ここでは追加待機不要。
     """
     context = browser.contexts[0]
     pg = context.pages[0]
-    pg.wait_for_function(
-        "typeof pywebview !== 'undefined' && typeof pywebview.api !== 'undefined'",
-        timeout=15_000,
-    )
     reset_app_state(pg)
     return pg
 
