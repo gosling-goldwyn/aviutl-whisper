@@ -29,9 +29,11 @@
         <span class="subtitle">音声文字起こし＋話者分離ツール</span>
     </header>
 
-    <div class="app-layout">
+    <div class="app-layout" id="app-layout">
         <!-- ====== 左ペイン: 設定 ====== -->
         <aside id="settings-pane" class="pane settings-pane">
+            <button id="btn-toggle-settings-pane" class="pane-toggle-btn" title="サイドバーを折り畳む" aria-label="サイドバーを折り畳む" aria-expanded="true">☰</button>
+            <div class="settings-pane-content">
 
             <section class="card" id="file-section">
                 <h2>📁 入力ファイル</h2>
@@ -149,10 +151,12 @@
             <footer>
                 <div id="device-info" class="device-info"></div>
             </footer>
+            </div>
         </aside>
 
-        <!-- ====== 右ペイン: プレビュー+結果 ====== -->
+        <!-- ====== 中央ペイン: プレビュー+一覧 ====== -->
         <main id="preview-pane" class="pane preview-pane">
+            <div class="center-preview-area">
 
             <section class="card" id="preview-section">
                 <h2>🖥️ シーンプレビュー</h2>
@@ -166,42 +170,12 @@
                     <button id="btn-next-seg" class="btn btn-nav" title="次のセグメント" disabled>▶</button>
                 </div>
             </section>
+            </div>
 
-            <!-- セグメント編集パネル -->
-            <section class="card hidden" id="seg-editor">
-                <h2>✏️ セグメント編集</h2>
-                <div class="seg-editor-row">
-                    <div class="seg-editor-field">
-                        <label>話者</label>
-                        <select id="seg-edit-speaker" class="seg-edit-input"></select>
-                    </div>
-                    <div class="seg-editor-field seg-editor-time">
-                        <label>開始</label>
-                        <input type="number" id="seg-edit-start" class="seg-edit-input" step="0.1" min="0">
-                    </div>
-                    <div class="seg-editor-field seg-editor-time">
-                        <label>終了</label>
-                        <input type="number" id="seg-edit-end" class="seg-edit-input" step="0.1" min="0">
-                    </div>
-                </div>
-                <div class="seg-editor-row">
-                    <div class="seg-editor-field seg-editor-text-field">
-                        <label>テキスト</label>
-                        <textarea id="seg-edit-text" class="seg-edit-input seg-edit-textarea" rows="2"></textarea>
-                    </div>
-                </div>
-                <div class="seg-editor-actions">
-                    <button id="btn-seg-apply" class="btn btn-small btn-primary" title="変更を適用">✔ 適用</button>
-                    <button id="btn-seg-play" class="btn btn-small" title="このセグメントの音声を再生">🔊 再生</button>
-                    <button id="btn-seg-add" class="btn btn-small" title="新しいセグメントを追加">＋ 追加</button>
-                    <button id="btn-seg-merge-prev" class="btn btn-small" title="前のセグメントと結合（同一話者のみ）" disabled>◀ 前と結合</button>
-                    <button id="btn-seg-merge-next" class="btn btn-small" title="後のセグメントと結合（同一話者のみ）" disabled>後と結合 ▶</button>
-                    <button id="btn-seg-delete" class="btn btn-small btn-danger" title="このセグメントを削除">🗑 削除</button>
-                </div>
-            </section>
+            <div id="center-splitter" class="splitter splitter-horizontal" role="separator" aria-label="セグメント一覧の高さ調整"></div>
 
-            <!-- セグメント一覧テーブル -->
-            <section class="card" id="segment-table-section">
+            <div class="center-list-area">
+            <section class="card segment-table-card" id="segment-table-section">
                 <div class="segment-table-header">
                     <h2>📊 セグメント一覧</h2>
                     <div class="result-stats" id="result-stats"></div>
@@ -238,7 +212,46 @@
                     <button id="btn-save" class="btn btn-primary" disabled>💾 exoファイルに保存</button>
                 </div>
             </section>
+            </div>
         </main>
+
+        <div id="right-splitter" class="splitter splitter-vertical" role="separator" aria-label="セグメント編集パネルの幅調整"></div>
+
+        <!-- ====== 右ペイン: セグメント編集 ====== -->
+        <aside id="segment-editor-pane" class="pane segment-editor-pane">
+            <section class="card hidden" id="seg-editor">
+                <h2>✏️ セグメント編集</h2>
+                <div class="seg-editor-row">
+                    <div class="seg-editor-field">
+                        <label>話者</label>
+                        <select id="seg-edit-speaker" class="seg-edit-input"></select>
+                    </div>
+                    <div class="seg-editor-field seg-editor-time">
+                        <label>開始</label>
+                        <input type="number" id="seg-edit-start" class="seg-edit-input" step="0.1" min="0">
+                    </div>
+                    <div class="seg-editor-field seg-editor-time">
+                        <label>終了</label>
+                        <input type="number" id="seg-edit-end" class="seg-edit-input" step="0.1" min="0">
+                    </div>
+                </div>
+                <div class="seg-editor-row">
+                    <div class="seg-editor-field seg-editor-text-field">
+                        <label>テキスト</label>
+                        <textarea id="seg-edit-text" class="seg-edit-input seg-edit-textarea" rows="6"></textarea>
+                    </div>
+                </div>
+                <div class="seg-editor-actions">
+                    <button id="btn-seg-apply" class="btn btn-small btn-primary" title="変更を適用">✔ 適用</button>
+                    <button id="btn-seg-play" class="btn btn-small" title="このセグメントの音声を再生">🔊 再生</button>
+                    <button id="btn-seg-add" class="btn btn-small" title="新しいセグメントを追加">＋ 追加</button>
+                    <button id="btn-seg-merge-prev" class="btn btn-small" title="前のセグメントと結合（同一話者のみ）" disabled>◀ 前と結合</button>
+                    <button id="btn-seg-merge-next" class="btn btn-small" title="後のセグメントと結合（同一話者のみ）" disabled>後と結合 ▶</button>
+                    <button id="btn-seg-delete" class="btn btn-small btn-danger" title="このセグメントを削除">🗑 削除</button>
+                </div>
+            </section>
+            <div class="editor-empty-state">セグメントを選択すると編集できます</div>
+        </aside>
     </div>
 
     <!-- ====== 保存確認ダイアログ (3択) ====== -->

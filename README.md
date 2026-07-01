@@ -1,74 +1,107 @@
 # aviutl-whisper
 
-m4a等の音声ファイルから、Whisperによる文字起こし＋話者分離を行うGUIツールです。
+音声ファイルを faster-whisper で文字起こしし、話者分離した結果を AviUtl
+拡張編集の `.exo` ファイルとして保存する Windows 向けGUIツールです。
 
-## 機能
+## 主な機能
 
-- **音声文字起こし**: faster-whisper による高速・高精度な文字起こし
-- **話者分離**: speechbrain による自動話者識別
-- **複数出力形式**: SRT字幕 / CSV / TSV / プレーンテキスト
-- **GPU/CPU自動検出**: CUDA GPUがあれば自動で高速処理
+- faster-whisper による文字起こし（tiny / base / small / medium / large-v3）
+- speechbrain による話者分離、またはオプションの pyannote.audio による話者分離
+- セグメントのテキスト・話者・開始時刻・終了時刻の編集、追加、削除、結合
+- 話者ごとの字幕色・縁色・立ち絵と、背景画像を反映したシーンプレビュー
+- AviUtl拡張編集用EXO出力（字幕、背景、立ち絵、非発話中の立ち絵のモノクロ化）
+- `.awproj` プロジェクトの保存・再開、Undo / Redo、キーボードショートカット
+- CUDA GPUの自動検出と、利用できない場合のCPUフォールバック
+
+GUIから保存できる出力形式は `.exo` のみです。SRT / CSV / TSV / TXT の生成関数も
+バックエンドにありますが、現在のGUIからは選択できません。
 
 ## 必要環境
 
-- Python 3.13+
+- Windows 10 / 11
+- Python 3.13以上
 - [uv](https://docs.astral.sh/uv/)
-- ffmpeg（音声変換に必要）
+- Microsoft Edge WebView2 Runtime
+- ffmpeg（m4a、mp3などをWAVへ変換するために必要）
 
-## セットアップ
+CUDA対応GPUは任意です。GPUを使う場合は、利用環境に合うCUDAドライバーが別途必要です。
 
-```bash
-# 依存関係インストール
+## セットアップと起動
+
+```powershell
 uv sync
-
-# 実行
 uv run python main.py
+```
 
-# デバッグモードで実行
+デバッグモードでは次のように起動します。
+
+```powershell
 uv run python main.py --debug
 ```
 
-## 対応音声形式
+初回の文字起こし時には、選択したWhisperモデルとspeechbrainモデルをインターネットから
+ダウンロードします。Whisperモデルの概算サイズは tiny: 75 MB、base: 140 MB、
+small: 460 MB、medium: 1.5 GB、large-v3: 3 GBです。
 
-m4a, mp3, wav, flac, ogg, aac, wma
+モデルは `%LOCALAPPDATA%\aviutl-whisper\whisper` と
+`%LOCALAPPDATA%\aviutl-whisper\speechbrain` にキャッシュされます。
 
-## 出力形式
+## 基本的な使い方
 
-| 形式 | 拡張子 | 説明 |
-|------|--------|------|
-| テキスト | .txt | `[00:00 - 00:05] Speaker 1: テキスト` |
-| SRT | .srt | 字幕ファイル標準形式 |
-| CSV | .csv | カンマ区切り |
-| TSV | .tsv | タブ区切り |
+1. 「ファイルを選択」で音声を選択します。
+2. 「設定」でWhisperモデル、言語、話者数、話者分離方式を指定します。
+3. 「開始」で文字起こしと話者分離を実行します。
+4. セグメント、話者割り当て、字幕、背景、立ち絵を編集します。
+5. プレビューを確認し、「exoファイルに保存」で出力します。
 
-## pyannote (オプション)
+対応音声形式は m4a、mp3、wav、flac、ogg、aac、wma です。
 
-高精度な話者分離に pyannote.audio を利用できます（オプション依存）。設定手順:
+## プロジェクトと設定
 
-1. インストール
-   - 推奨（リポジトリの optional deps を使う）: uv pip install ".[pyannote]"
-   - または個別に: uv pip install pyannote.audio
+作業状態は `.awproj` ファイルに保存できます。プロジェクトにはセグメント、話者割り当て、
+EXO設定、元音声のパス、プレビュー位置が含まれます。元音声を移動・削除した後も編集と
+EXO出力はできますが、セグメント音声の再生はできません。
 
-2. Hugging Face トークンを取得
-   - https://huggingface.co にサインアップし、Settings → Access Tokens で新しいトークン（read 権限）を作成してコピーします。
+アプリ設定は `%LOCALAPPDATA%\aviutl-whisper\settings.json` に自動保存されます。
+Hugging FaceトークンはWindowsではDPAPIで暗号化されます。レイアウトの折りたたみ状態と
+ペインサイズはWebView2のlocalStorageに保存されます。
 
-3. モデル利用条件の承諾
-   - pyannote の話者ダイアライゼーションモデルはゲート付きです。
-   - 以下の Hugging Face リポジトリは利用前にモデルページで利用条件（Access / Accept）を承諾する必要があります:
-     - https://huggingface.co/pyannote/speaker-diarization-3.1
-     - https://huggingface.co/pyannote/speaker-diarization-community-1
-     - https://huggingface.co/pyannote/segmentation-3.0
-   - 各モデルページにアクセスしてサインインし、「Access」や「I accept」などのボタンで利用条件に同意してください。
+プロジェクト形式の詳細は [spec/project-format.md](spec/project-format.md)、EXO生成規則は
+[spec/exo-export.md](spec/exo-export.md) を参照してください。
 
-4. トークンの登録
-   - GUI: 設定で「話者分離方式」を "pyannote" に切り替え、"HuggingFace トークン" 欄に貼り付けて保存します。Windows ではトークンがDPAPIで暗号化されます。
-   - テスト/CI: プロジェクトルートに `.env` を作成し `HF_TOKEN=hf_xxx` を置くとテストが参照できます（`.env` は .gitignore に含まれます）。
+## pyannote.audioを使う場合（オプション）
 
-5. GPUでの実行（任意）
-   - GPUで高速化したい場合は、事前にCUDA対応のPyTorchをインストールしてください（https://pytorch.org の公式手順を参照）。GPUが利用可能なら自動でGPUへ移動します。
+1. オプション依存をインストールします。
 
-トラブルシューティング
+   ```powershell
+   uv sync --extra pyannote
+   ```
 
-- `import` / 互換性エラーが出る場合は pyannote のバージョンや依存関係（torch等）を確認してください。本アプリは pyannote 3.x / 4.x の戻り値形式に対応しています。
-- pyannote をインストールできない、またはモデルにアクセスできない場合は、上記のモデルページで利用条件の承諾（Access）を行っているかを確認してください。
+2. [Hugging Face](https://huggingface.co/) でread権限のトークンを作成します。
+3. [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1)
+   と、そのページから案内されるゲート付き依存モデルの利用条件に同意します。
+4. 文字起こし設定で話者分離方式を「pyannote」にし、トークンを入力します。
 
+テストやCIでは、リポジトリ直下の `.env` に `HF_TOKEN=hf_xxx` を設定できます。
+`.env` はコミットしないでください。
+
+## テスト
+
+```powershell
+# バックエンド単体テスト
+uv run pytest tests/test_backend.py -q
+
+# Windows + WebView2が必要なE2Eテスト
+uv run pytest tests/e2e -m "not slow" -v
+```
+
+E2Eテストの前提とユースケースは [spec/tests/00-overview.md](spec/tests/00-overview.md) を
+参照してください。
+
+## 制約とトラブルシューティング
+
+- 初回モデル取得にはインターネット接続と十分なディスク容量が必要です。
+- CUDAでモデルを読み込めない場合はCPUへフォールバックするため、処理が遅くなります。
+- pyannoteで403系エラーになる場合は、モデル利用条件への同意とトークン権限を確認してください。
+- EXOはAviUtl互換のためCP932で保存されます。CP932で表現できないパスや設定値は避けてください。
+- 音声変換に失敗する場合は、`ffmpeg -version` が実行できることを確認してください。

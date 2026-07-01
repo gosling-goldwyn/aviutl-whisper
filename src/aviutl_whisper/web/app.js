@@ -43,9 +43,16 @@ const DEFAULT_SPEAKER_COLORS = [
     "ffff00", "ff8000", "8080ff", "80ff80",
 ];
 
+const LAYOUT_STORAGE_KEYS = {
+    leftCollapsed: "aviutlWhisper.leftSidebarCollapsed",
+    rightWidth: "aviutlWhisper.rightPaneWidth",
+    segmentListHeight: "aviutlWhisper.segmentListHeight",
+};
+
 // --- 初期化 ---
 document.addEventListener("DOMContentLoaded", () => {
     initEventListeners();
+    initPaneLayout();
     updateHfTokenVisibility();
     renderSpeakerColors();
     renderSpeakerTachie();
@@ -173,6 +180,206 @@ function initEventListeners() {
         if (e.key === "ArrowLeft") { navigatePreview(-1); e.preventDefault(); }
         if (e.key === "ArrowRight") { navigatePreview(1); e.preventDefault(); }
     });
+}
+
+function initPaneLayout() {
+    const layout = $("#app-layout");
+    const toggleBtn = $("#btn-toggle-settings-pane");
+    const rightSplitter = $("#right-splitter");
+    const centerSplitter = $("#center-splitter");
+    const rightPane = $("#segment-editor-pane");
+    const previewPane = $("#preview-pane");
+    if (!layout || !toggleBtn || !rightSplitter || !centerSplitter || !rightPane || !previewPane) return;
+
+    const savedCollapsed = readStorage(LAYOUT_STORAGE_KEYS.leftCollapsed);
+    setSettingsPaneCollapsed(savedCollapsed === "true");
+
+    const savedRightWidth = parseInt(readStorage(LAYOUT_STORAGE_KEYS.rightWidth), 10);
+    if (!Number.isNaN(savedRightWidth)) {
+        setRightPaneWidth(savedRightWidth);
+    }
+
+    const savedSegmentListHeight = parseInt(readStorage(LAYOUT_STORAGE_KEYS.segmentListHeight), 10);
+    if (!Number.isNaN(savedSegmentListHeight)) {
+        setSegmentListHeight(savedSegmentListHeight);
+    }
+
+    toggleBtn.addEventListener("click", () => {
+        const collapsed = !layout.classList.contains("settings-collapsed");
+        setSettingsPaneCollapsed(collapsed);
+        writeStorage(LAYOUT_STORAGE_KEYS.leftCollapsed, String(collapsed));
+    });
+
+    rightSplitter.addEventListener("pointerdown", (e) => {
+        if (window.matchMedia("(max-width: 768px)").matches) return;
+        if (e.pointerType === "mouse") return;
+        e.preventDefault();
+        rightSplitter.setPointerCapture(e.pointerId);
+        rightSplitter.classList.add("dragging");
+        document.body.classList.add("pane-dragging");
+
+        const startX = e.clientX;
+        const startWidth = rightPane.getBoundingClientRect().width;
+
+        const onMove = (moveEvent) => {
+            const nextWidth = startWidth - (moveEvent.clientX - startX);
+            setRightPaneWidth(nextWidth, true);
+        };
+        const onUp = () => {
+            rightSplitter.classList.remove("dragging");
+            document.body.classList.remove("pane-dragging");
+            writeStorage(LAYOUT_STORAGE_KEYS.rightWidth, getCssPixelValue("--right-pane-w"));
+            document.removeEventListener("pointermove", onMove);
+            document.removeEventListener("pointerup", onUp);
+            document.removeEventListener("pointercancel", onUp);
+        };
+
+        document.addEventListener("pointermove", onMove);
+        document.addEventListener("pointerup", onUp);
+        document.addEventListener("pointercancel", onUp);
+    });
+
+    rightSplitter.addEventListener("mousedown", (e) => {
+        if (window.matchMedia("(max-width: 768px)").matches) return;
+        if (e.button !== 0) return;
+        e.preventDefault();
+        rightSplitter.classList.add("dragging");
+        document.body.classList.add("pane-dragging");
+
+        const startX = e.clientX;
+        const startWidth = rightPane.getBoundingClientRect().width;
+
+        const onMove = (moveEvent) => {
+            const nextWidth = startWidth - (moveEvent.clientX - startX);
+            setRightPaneWidth(nextWidth, true);
+        };
+        const onUp = () => {
+            rightSplitter.classList.remove("dragging");
+            document.body.classList.remove("pane-dragging");
+            writeStorage(LAYOUT_STORAGE_KEYS.rightWidth, getCssPixelValue("--right-pane-w"));
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+        };
+
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    });
+
+    centerSplitter.addEventListener("pointerdown", (e) => {
+        if (window.matchMedia("(max-width: 768px)").matches) return;
+        if (e.pointerType === "mouse") return;
+        e.preventDefault();
+        centerSplitter.setPointerCapture(e.pointerId);
+        centerSplitter.classList.add("dragging");
+        document.body.classList.add("pane-dragging-y");
+
+        const startY = e.clientY;
+        const startHeight = parseFloat(getComputedStyle(layout).getPropertyValue("--segment-list-h")) || 320;
+
+        const onMove = (moveEvent) => {
+            const nextHeight = startHeight - (moveEvent.clientY - startY);
+            setSegmentListHeight(nextHeight, true);
+        };
+        const onUp = () => {
+            centerSplitter.classList.remove("dragging");
+            document.body.classList.remove("pane-dragging-y");
+            writeStorage(LAYOUT_STORAGE_KEYS.segmentListHeight, getCssPixelValue("--segment-list-h"));
+            document.removeEventListener("pointermove", onMove);
+            document.removeEventListener("pointerup", onUp);
+            document.removeEventListener("pointercancel", onUp);
+        };
+
+        document.addEventListener("pointermove", onMove);
+        document.addEventListener("pointerup", onUp);
+        document.addEventListener("pointercancel", onUp);
+    });
+
+    centerSplitter.addEventListener("mousedown", (e) => {
+        if (window.matchMedia("(max-width: 768px)").matches) return;
+        if (e.button !== 0) return;
+        e.preventDefault();
+        centerSplitter.classList.add("dragging");
+        document.body.classList.add("pane-dragging-y");
+
+        const startY = e.clientY;
+        const startHeight = parseFloat(getComputedStyle(layout).getPropertyValue("--segment-list-h")) || 320;
+
+        const onMove = (moveEvent) => {
+            const nextHeight = startHeight - (moveEvent.clientY - startY);
+            setSegmentListHeight(nextHeight, true);
+        };
+        const onUp = () => {
+            centerSplitter.classList.remove("dragging");
+            document.body.classList.remove("pane-dragging-y");
+            writeStorage(LAYOUT_STORAGE_KEYS.segmentListHeight, getCssPixelValue("--segment-list-h"));
+            document.removeEventListener("mousemove", onMove);
+            document.removeEventListener("mouseup", onUp);
+        };
+
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+    });
+
+    window.addEventListener("resize", () => {
+        setRightPaneWidth(parseFloat(getComputedStyle(layout).getPropertyValue("--right-pane-w")) || 340);
+        setSegmentListHeight(parseFloat(getComputedStyle(layout).getPropertyValue("--segment-list-h")) || 320);
+    });
+}
+
+function setSettingsPaneCollapsed(collapsed) {
+    const layout = $("#app-layout");
+    const toggleBtn = $("#btn-toggle-settings-pane");
+    if (!layout || !toggleBtn) return;
+    layout.classList.toggle("settings-collapsed", collapsed);
+    toggleBtn.setAttribute("aria-expanded", String(!collapsed));
+    toggleBtn.title = collapsed ? "サイドバーを展開" : "サイドバーを折り畳む";
+    toggleBtn.setAttribute("aria-label", toggleBtn.title);
+}
+
+function setRightPaneWidth(width, persist = false) {
+    const layout = $("#app-layout");
+    if (!layout) return;
+    const maxWidth = Math.max(280, Math.floor(window.innerWidth * 0.45));
+    const nextWidth = clamp(Math.round(width), 280, maxWidth);
+    layout.style.setProperty("--right-pane-w", `${nextWidth}px`);
+    if (persist) writeStorage(LAYOUT_STORAGE_KEYS.rightWidth, String(nextWidth));
+}
+
+function setSegmentListHeight(height, persist = false) {
+    const layout = $("#app-layout");
+    const previewPane = $("#preview-pane");
+    if (!layout || !previewPane) return;
+    const maxHeight = Math.max(180, Math.floor(previewPane.getBoundingClientRect().height * 0.6));
+    const nextHeight = clamp(Math.round(height), 180, maxHeight);
+    layout.style.setProperty("--segment-list-h", `${nextHeight}px`);
+    if (persist) writeStorage(LAYOUT_STORAGE_KEYS.segmentListHeight, String(nextHeight));
+}
+
+function getCssPixelValue(name) {
+    const layout = $("#app-layout");
+    if (!layout) return "";
+    const value = parseFloat(getComputedStyle(layout).getPropertyValue(name));
+    return Number.isNaN(value) ? "" : String(Math.round(value));
+}
+
+function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+}
+
+function readStorage(key) {
+    try {
+        return window.localStorage.getItem(key);
+    } catch (e) {
+        return null;
+    }
+}
+
+function writeStorage(key, value) {
+    try {
+        window.localStorage.setItem(key, value);
+    } catch (e) {
+        // localStorage が利用できない環境ではレイアウト保存だけ省略する
+    }
 }
 
 // --- モーダル ---
