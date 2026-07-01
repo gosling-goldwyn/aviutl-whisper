@@ -97,6 +97,10 @@ def browser(app_process, _pw) -> Browser:
         "typeof pywebview !== 'undefined' && typeof pywebview.api !== 'undefined'",
         timeout=60_000,
     )
+    pg.wait_for_function(
+        "window.__aviutlWhisperReady === true",
+        timeout=60_000,
+    )
     yield b
     # CDPセッションを切断（WebView2 プロセスは app_process が終了させる）
     b.close()

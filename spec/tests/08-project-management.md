@@ -114,7 +114,7 @@
 
 ### UC-08-11: ウィンドウタイトルの更新
 
-**前提条件**: プロジェクトが「myproject.json」として保存済み
+**前提条件**: プロジェクトが「myproject.awproj」として保存済み
 
 **期待結果**:
 - タイトルバーに `aviutl-whisper - myproject` と表示される
@@ -141,3 +141,4 @@ def test_unsaved_dialog_appears(page, inject_mock_segments):
     page.click("#btn-load-project")
     assert page.locator("#save-confirm-modal").is_visible()
 ```
+

@@ -11,6 +11,10 @@
     --radius: 8px;
     --header-h: 48px;
     --menubar-h: 28px;
+    --left-pane-w: 360px;
+    --right-pane-w: 340px;
+    --segment-list-h: 320px;
+    --splitter-size: 6px;
 }
 
 * {
@@ -131,20 +135,146 @@ body {
     font-size: 0.8rem;
 }
 
-/* ====== 2ペインレイアウト ====== */
+/* ====== 4ペインレイアウト ====== */
 .app-layout {
     display: grid;
-    grid-template-columns: 360px 1fr;
+    grid-template-columns: var(--left-pane-w) minmax(360px, 1fr) var(--splitter-size) var(--right-pane-w);
     height: calc(100vh - var(--header-h) - var(--menubar-h));
+    min-width: 0;
+}
+
+.app-layout.settings-collapsed {
+    --left-pane-w: 44px;
 }
 
 .pane {
     overflow-y: auto;
     padding: 12px;
+    min-width: 0;
+    min-height: 0;
 }
 
 .settings-pane {
     border-right: 1px solid var(--border);
+    position: relative;
+    overflow-x: hidden;
+}
+
+.settings-pane-content {
+    min-width: 320px;
+    padding-top: 34px;
+}
+
+.pane-toggle-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 2;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-input);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+}
+
+.pane-toggle-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.app-layout.settings-collapsed .settings-pane {
+    padding: 8px;
+}
+
+.app-layout.settings-collapsed .settings-pane-content {
+    display: none;
+}
+
+.app-layout.settings-collapsed .pane-toggle-btn {
+    right: 8px;
+}
+
+.preview-pane {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr) var(--splitter-size) minmax(180px, var(--segment-list-h));
+    overflow: hidden;
+    gap: 0;
+}
+
+.center-preview-area,
+.center-list-area {
+    min-height: 0;
+    overflow: auto;
+}
+
+.center-preview-area {
+    padding-bottom: 8px;
+}
+
+.center-list-area {
+    padding-top: 8px;
+}
+
+.segment-editor-pane {
+    border-left: 1px solid var(--border);
+}
+
+.splitter {
+    background: transparent;
+    position: relative;
+    z-index: 5;
+    flex-shrink: 0;
+}
+
+.splitter::before {
+    content: "";
+    position: absolute;
+    background: var(--border);
+    transition: background 0.15s;
+}
+
+.splitter:hover::before,
+.splitter.dragging::before {
+    background: var(--accent);
+}
+
+.splitter-vertical {
+    cursor: col-resize;
+    margin: 0 -1px;
+}
+
+.splitter-vertical::before {
+    top: 0;
+    bottom: 0;
+    left: 2px;
+    width: 2px;
+}
+
+.splitter-horizontal {
+    cursor: row-resize;
+}
+
+.splitter-horizontal::before {
+    left: 0;
+    right: 0;
+    top: 2px;
+    height: 2px;
+}
+
+body.pane-dragging {
+    user-select: none;
+    cursor: col-resize;
+}
+
+body.pane-dragging-y {
+    user-select: none;
+    cursor: row-resize;
 }
 
 /* ====== カード ====== */
@@ -154,6 +284,23 @@ body {
     border-radius: var(--radius);
     padding: 14px;
     margin-bottom: 10px;
+}
+
+.preview-pane .card,
+.segment-editor-pane .card {
+    margin-bottom: 0;
+}
+
+#preview-section {
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.segment-table-card {
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
 }
 
 .card h2 {
@@ -569,6 +716,9 @@ input[type="color"] {
     position: relative;
     width: 100%;
     aspect-ratio: 16 / 9;
+    flex: 1;
+    min-height: 180px;
+    max-height: calc(100vh - var(--header-h) - var(--menubar-h) - var(--segment-list-h) - 94px);
 }
 
 .preview-container .preview-image {
@@ -679,6 +829,42 @@ input[type="color"] {
     display: flex;
     gap: 6px;
     margin-top: 6px;
+    flex-wrap: wrap;
+}
+
+.segment-editor-pane #seg-editor {
+    min-height: 0;
+}
+
+.segment-editor-pane .seg-editor-row {
+    flex-wrap: wrap;
+}
+
+.segment-editor-pane .seg-editor-field {
+    min-width: 0;
+    flex: 1;
+}
+
+.segment-editor-pane .seg-editor-field.seg-editor-time {
+    width: auto;
+    min-width: 86px;
+}
+
+.segment-editor-pane .seg-edit-textarea {
+    min-height: 132px;
+}
+
+.editor-empty-state {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    text-align: center;
+    padding: 30px 12px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius);
+}
+
+#seg-editor:not(.hidden) + .editor-empty-state {
+    display: none;
 }
 
 /* ====== セグメント一覧テーブル ====== */
@@ -707,7 +893,8 @@ input[type="color"] {
 }
 
 .segment-table-wrap {
-    max-height: 320px;
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -937,6 +1124,7 @@ footer {
 
     .app-layout {
         grid-template-columns: 1fr;
+        display: block;
         height: auto;
     }
 
@@ -945,8 +1133,43 @@ footer {
         border-bottom: 1px solid var(--border);
     }
 
+    .settings-pane-content {
+        min-width: 0;
+    }
+
+    .app-layout.settings-collapsed .settings-pane-content {
+        display: block;
+    }
+
+    .app-layout.settings-collapsed .settings-pane {
+        padding: 12px;
+    }
+
     .pane {
         overflow-y: visible;
+        max-height: none;
+    }
+
+    .preview-pane {
+        display: block;
+    }
+
+    .center-preview-area,
+    .center-list-area {
+        overflow: visible;
+        padding: 0;
+    }
+
+    .segment-editor-pane {
+        border-left: none;
+        border-top: 1px solid var(--border);
+    }
+
+    .splitter {
+        display: none;
+    }
+
+    .preview-container {
         max-height: none;
     }
 

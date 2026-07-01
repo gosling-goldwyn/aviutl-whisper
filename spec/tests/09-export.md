@@ -2,7 +2,7 @@
 
 ## 概要
 
-文字起こし結果を各形式（EXO / SRT / CSV / TSV / テキスト）でファイルに保存する操作を確認する。
+文字起こし結果を、GUIが正式に提供するAviUtl拡張編集用EXOとして保存する操作を確認する。SRT / CSV / TSV / テキストはバックエンド関数のみで、E2E対象外とする。
 
 ---
 
@@ -100,3 +100,4 @@ def test_save_result_called_with_exo_settings(page, inject_mock_segments):
     assert args[0] == "exo"
     assert args[1]["font_size"] == 48
 ```
+
