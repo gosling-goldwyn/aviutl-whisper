@@ -59,11 +59,13 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // pywebview API が準備完了してからAPI呼び出し
+window.__aviutlWhisperReady = false;
 window.addEventListener("pywebviewready", async () => {
     await loadDeviceInfo();
     await loadExoDefaults();
     await loadFonts();
     await loadSavedSettings();
+    window.__aviutlWhisperReady = true;
 });
 
 function initEventListeners() {
