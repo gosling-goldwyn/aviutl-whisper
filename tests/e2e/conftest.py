@@ -137,6 +137,7 @@ def mock_segments(page: Page) -> Page:
         previewSegments = {segs_json};
         previewIndex = 0;
         isDirty = false;
+        setTtsAvailability(true);
         document.getElementById('btn-save').disabled = false;
         document.getElementById('btn-save-project').disabled = false;
         document.getElementById('menu-save-project').disabled = false;

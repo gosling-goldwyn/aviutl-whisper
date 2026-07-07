@@ -23,6 +23,12 @@
                 <button id="menu-redo" class="menu-dropdown-item" disabled>やり直し<span class="menu-shortcut">Ctrl+Y</span></button>
             </div>
         </div>
+        <div class="menu-entry" id="menu-tools-entry">
+            <button class="menu-entry-btn">ツール(T)</button>
+            <div class="menu-dropdown" id="menu-tools-dropdown">
+                <button id="menu-open-tts" class="menu-dropdown-item" disabled>ElevenLabs TTS<span class="menu-shortcut">Ctrl+Shift+E</span></button>
+            </div>
+        </div>
     </nav>
     <header class="app-header">
         <h1>🎙️ aviutl-whisper</h1>
@@ -178,7 +184,10 @@
             <section class="card segment-table-card" id="segment-table-section">
                 <div class="segment-table-header">
                     <h2>📊 セグメント一覧</h2>
-                    <div class="result-stats" id="result-stats"></div>
+                    <div class="segment-table-header-actions">
+                        <div class="result-stats" id="result-stats"></div>
+                        <button id="btn-open-tts" class="btn btn-small" disabled>ElevenLabs TTS</button>
+                    </div>
                 </div>
                 <div id="segment-table-wrap" class="segment-table-wrap">
                     <table id="segment-table" class="segment-table">
@@ -251,7 +260,150 @@
                 </div>
             </section>
             <div class="editor-empty-state">セグメントを選択すると編集できます</div>
+            <section class="card hidden" id="seg-tts-status-panel">
+                <h2>ElevenLabs TTS</h2>
+                <div class="seg-tts-status-row">
+                    <span class="seg-tts-status-label">選択セグメント</span>
+                    <span id="seg-tts-status" class="seg-tts-status-badge tts-status-not_generated">未生成</span>
+                </div>
+                <p id="seg-tts-status-detail" class="seg-tts-status-detail"></p>
+                <div class="seg-tts-actions">
+                    <button id="btn-seg-tts-play" class="btn btn-small" disabled>TTS再生</button>
+                    <button id="btn-seg-tts-regenerate" class="btn btn-small btn-primary">再生成</button>
+                </div>
+            </section>
         </aside>
+    </div>
+
+    <!-- ====== ElevenLabs TTSモーダル ====== -->
+    <div id="tts-modal" class="modal-overlay hidden">
+        <div class="modal-content tts-modal-content">
+            <div class="modal-header">
+                <h2>🔊 ElevenLabs TTS</h2>
+                <button id="btn-close-tts" class="btn-modal-close" title="閉じる">✕</button>
+            </div>
+            <div class="tts-settings-grid">
+                <div class="setting-item setting-item-wide">
+                    <label for="tts-api-key">ElevenLabs API Key</label>
+                    <input type="password" id="tts-api-key" autocomplete="off">
+                </div>
+                <div class="setting-item">
+                    <label for="tts-model-id">model_id</label>
+                    <div class="tts-select-row">
+                        <select id="tts-model-id">
+                            <option value="eleven_multilingual_v2">eleven_multilingual_v2</option>
+                        </select>
+                        <button id="btn-fetch-tts-models" class="btn btn-small">モデル一覧を取得</button>
+                    </div>
+                </div>
+                <div class="setting-item">
+                    <label for="tts-output-format">output_format</label>
+                    <input type="text" id="tts-output-format" value="mp3_44100_128">
+                </div>
+                <div class="setting-item">
+                    <label for="tts-generation-mode">生成方式</label>
+                    <select id="tts-generation-mode" disabled>
+                        <option value="per_segment_context">per_segment_context</option>
+                        <option value="chunk_v3">chunk_v3</option>
+                    </select>
+                </div>
+                <div id="tts-v3-warning" class="tts-v3-warning setting-item-wide hidden">
+                    eleven_v3では previous_text / next_text と language text normalization は使用できません。自然さを優先する場合はチャンク単位生成を推奨します。
+                </div>
+                <div id="tts-multilingual-info" class="tts-model-info setting-item-wide hidden">
+                    eleven_multilingual_v2では previous_text / next_text は使用できますが、language_code / language text normalization は送信しません。
+                </div>
+                <div id="tts-chunk-settings" class="setting-item setting-item-wide hidden">
+                    <label>チャンク設定</label>
+                    <div class="tts-parameter-grid">
+                        <div class="setting-item">
+                            <label for="tts-max-chars-per-chunk">max_chars_per_chunk</label>
+                            <input type="number" id="tts-max-chars-per-chunk" min="1" step="1" value="1200">
+                        </div>
+                        <div class="setting-item">
+                            <label for="tts-max-segments-per-chunk">max_segments_per_chunk</label>
+                            <input type="number" id="tts-max-segments-per-chunk" min="1" step="1" value="8">
+                        </div>
+                        <label class="checkbox-label tts-boost-setting">
+                            <input type="checkbox" id="tts-split-on-speaker-change">
+                            split_on_speaker_change
+                        </label>
+                    </div>
+                    <small class="tts-chunk-hint">
+                        Text to Speech APIは1チャンク1ボイスのため、現在はこの設定にかかわらず話者変更時に分割します。
+                    </small>
+                </div>
+                <div class="setting-item setting-item-wide">
+                    <div class="tts-section-heading">
+                        <label>話者ごとのボイス</label>
+                        <button id="btn-fetch-tts-voices" class="btn btn-small">ボイス一覧を取得</button>
+                    </div>
+                    <div id="tts-voice-settings" class="tts-voice-settings"></div>
+                </div>
+                <div class="setting-item setting-item-wide">
+                    <label>全話者共通 voice_settings</label>
+                    <div class="tts-parameter-grid">
+                        <div class="setting-item">
+                            <label for="tts-stability">stability</label>
+                            <input type="number" id="tts-stability" min="0" max="1" step="0.05" value="0.5">
+                        </div>
+                        <div class="setting-item">
+                            <label for="tts-similarity-boost">similarity_boost</label>
+                            <input type="number" id="tts-similarity-boost" min="0" max="1" step="0.05" value="0.75">
+                        </div>
+                        <div class="setting-item">
+                            <label for="tts-style">style</label>
+                            <input type="number" id="tts-style" min="0" max="1" step="0.05" value="0">
+                        </div>
+                        <div class="setting-item">
+                            <label for="tts-speed">speed</label>
+                            <input type="number" id="tts-speed" min="0.1" step="0.05" value="1">
+                        </div>
+                        <label class="checkbox-label tts-boost-setting">
+                            <input type="checkbox" id="tts-use-speaker-boost" checked>
+                            use_speaker_boost
+                        </label>
+                    </div>
+                </div>
+                <div class="setting-item setting-item-wide">
+                    <label for="tts-output-dir">TTS出力フォルダ</label>
+                    <div class="tts-output-row">
+                        <input type="text" id="tts-output-dir" readonly>
+                        <button id="btn-select-tts-dir" class="btn btn-small">出力フォルダを選択</button>
+                    </div>
+                </div>
+            </div>
+            <div class="tts-action-row">
+                <button id="btn-save-tts-txt" class="btn btn-small">台本TXT保存</button>
+                <button id="btn-save-tts-csv" class="btn btn-small">台本CSV保存</button>
+                <button id="btn-save-tts-wav" class="btn btn-small">結合WAV保存</button>
+                <button id="btn-generate-tts-all" class="btn btn-small btn-primary">全セグメントTTS生成</button>
+                <button id="btn-generate-tts-selected" class="btn btn-small">選択セグメントTTS生成</button>
+                <button id="btn-play-tts-selected" class="btn btn-small">選択セグメントTTS再生</button>
+                <button id="btn-refresh-tts" class="btn btn-small">状態更新</button>
+                <button id="btn-cancel-tts" class="btn btn-small btn-danger hidden">TTS中止</button>
+            </div>
+            <div id="tts-progress-area" class="hidden">
+                <div class="progress-bar">
+                    <div id="tts-progress-fill" class="progress-fill"></div>
+                </div>
+                <p id="tts-progress-text" class="progress-text">準備中...</p>
+            </div>
+            <div class="tts-table-wrap">
+                <table class="tts-table">
+                    <thead>
+                        <tr>
+                            <th class="tts-col-index">index</th>
+                            <th class="tts-col-speaker">speaker</th>
+                            <th>text</th>
+                            <th class="tts-col-status">TTS状態</th>
+                            <th class="tts-col-actions">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tts-table-body"></tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- ====== 保存確認ダイアログ (3択) ====== -->

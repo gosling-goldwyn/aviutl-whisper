@@ -33,6 +33,7 @@ def inject_segments(page: Page, segments: list[dict] | None = None) -> None:
     page.evaluate(f"""
         previewSegments = {segs_json};
         previewIndex = 0;
+        setTtsAvailability(true);
         document.getElementById('preview-placeholder').classList.add('hidden');
         renderSegmentTable();
         populateSegmentEditor();
@@ -62,6 +63,7 @@ def reset_app_state(page: Page) -> None:
     """
     page.evaluate("""
         document.getElementById('transcription-modal').classList.add('hidden');
+        document.getElementById('tts-modal').classList.add('hidden');
         document.getElementById('save-confirm-modal').classList.add('hidden');
         document.querySelectorAll('.menu-entry').forEach(e => e.classList.remove('open'));
         previewSegments = [];
@@ -82,6 +84,8 @@ def reset_app_state(page: Page) -> None:
         document.getElementById('file-info').classList.add('hidden');
         document.getElementById('progress-area').classList.add('hidden');
         document.getElementById('btn-save').disabled = true;
+        setTtsAvailability(false);
+        hide(document.getElementById('seg-tts-status-panel'));
         document.getElementById('btn-save-project').disabled = true;
         document.getElementById('menu-save-project').disabled = true;
         document.getElementById('menu-save-project-as').disabled = true;
