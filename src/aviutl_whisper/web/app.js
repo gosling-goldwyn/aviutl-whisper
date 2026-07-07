@@ -10,6 +10,16 @@ let exoDefaults = null;
 let lastSpeakers = [];
 let currentMapping = {};
 let backgroundImage = "";
+let savedTtsVoiceIds = {};
+let availableTtsVoices = [];
+let availableTtsModels = [];
+let ttsVoicePreviewAudio = null;
+let ttsSelectedIndex = 0;
+let ttsBusy = false;
+let ttsSaveTimer = null;
+let selectedTtsStatusTimer = null;
+let selectedTtsStatusRequestId = 0;
+let selectedTtsStatusItem = null;
 
 // --- セグメントテキスト編集セッション管理 ---
 let _segTextEditStarted = false;
@@ -30,6 +40,11 @@ function clearDirty() {
 function enableSaveMenuItems() {
     $("#menu-save-project").disabled = false;
     $("#menu-save-project-as").disabled = false;
+}
+
+function setTtsAvailability(enabled) {
+    $("#btn-open-tts").disabled = !enabled;
+    $("#menu-open-tts").disabled = !enabled;
 }
 
 // --- Undo/Redo ---
@@ -76,6 +91,21 @@ function initEventListeners() {
     $("#btn-start").addEventListener("click", startTranscription);
     $("#btn-cancel").addEventListener("click", cancelTranscription);
     $("#btn-save").addEventListener("click", saveResult);
+    $("#btn-open-tts").addEventListener("click", openTtsModal);
+    $("#btn-close-tts").addEventListener("click", closeTtsModal);
+    $("#btn-select-tts-dir").addEventListener("click", selectTtsOutputDir);
+    $("#btn-save-tts-txt").addEventListener("click", () => saveTtsScript("txt"));
+    $("#btn-save-tts-csv").addEventListener("click", () => saveTtsScript("csv"));
+    $("#btn-save-tts-wav").addEventListener("click", saveCombinedTtsWav);
+    $("#btn-generate-tts-all").addEventListener("click", generateAllTts);
+    $("#btn-generate-tts-selected").addEventListener("click", () => generateOneTts(ttsSelectedIndex));
+    $("#btn-play-tts-selected").addEventListener("click", () => playTts(ttsSelectedIndex));
+    $("#btn-refresh-tts").addEventListener("click", refreshTtsStatus);
+    $("#btn-cancel-tts").addEventListener("click", () => pywebview.api.cancel_tts());
+    $("#btn-seg-tts-play").addEventListener("click", () => playTts(previewIndex));
+    $("#btn-seg-tts-regenerate").addEventListener("click", () => generateOneTts(previewIndex));
+    $("#btn-fetch-tts-voices").addEventListener("click", fetchTtsVoices);
+    $("#btn-fetch-tts-models").addEventListener("click", fetchTtsModels);
     $("#btn-bg-image").addEventListener("click", selectBackgroundImage);
     $("#btn-bg-image-clear").addEventListener("click", clearBackgroundImage);
     $("#btn-prev-seg").addEventListener("click", () => navigatePreview(-1));
@@ -114,6 +144,9 @@ function initEventListeners() {
     $("#transcription-modal").addEventListener("click", (e) => {
         if (e.target === $("#transcription-modal")) closeTranscriptionModal();
     });
+    $("#tts-modal").addEventListener("click", (e) => {
+        if (e.target === $("#tts-modal")) closeTtsModal();
+    });
 
     // メニューバー
     const fileEntry = $("#menu-file-entry");
@@ -138,6 +171,19 @@ function initEventListeners() {
     });
     $("#menu-undo").addEventListener("click", () => { editEntry.classList.remove("open"); undo(); });
     $("#menu-redo").addEventListener("click", () => { editEntry.classList.remove("open"); redo(); });
+
+    const toolsEntry = $("#menu-tools-entry");
+    toolsEntry.querySelector(".menu-entry-btn").addEventListener("click", (e) => {
+        e.stopPropagation();
+        toolsEntry.classList.toggle("open");
+    });
+    document.addEventListener("click", () => {
+        toolsEntry.classList.remove("open");
+    });
+    $("#menu-open-tts").addEventListener("click", () => {
+        toolsEntry.classList.remove("open");
+        openTtsModal();
+    });
 
     // キーボードナビゲーション
     document.addEventListener("keydown", (e) => {
@@ -175,6 +221,11 @@ function initEventListeners() {
         if (e.ctrlKey && !e.shiftKey && (e.key === "s" || e.key === "S")) {
             e.preventDefault();
             saveProject();
+            return;
+        }
+        if (e.ctrlKey && e.shiftKey && (e.key === "e" || e.key === "E")) {
+            e.preventDefault();
+            if (previewSegments.length > 0) openTtsModal();
             return;
         }
         if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
@@ -731,6 +782,7 @@ function showResult(result) {
 
     setProgress(100, "完了！");
     $("#btn-save").disabled = false;
+    setTtsAvailability(true);
     $("#btn-save-project").disabled = false;
 
     // 新しい文字起こし結果なので Undo 履歴をリセット
@@ -878,6 +930,7 @@ async function loadProject() {
 
         // ボタン有効化
         $("#btn-save").disabled = false;
+        setTtsAvailability(true);
         $("#btn-start").disabled = !selectedFile;
         $("#btn-save-project").disabled = false;
 
@@ -1103,6 +1156,31 @@ async function loadSavedSettings() {
         if (saved.num_speakers) $("#num-speakers").value = saved.num_speakers;
         if (saved.diarization_method) $("#diarization-method").value = saved.diarization_method;
         if (saved.hf_token_decrypted) $("#hf-token").value = saved.hf_token_decrypted;
+        if (saved.elevenlabs_api_key_decrypted) {
+            $("#tts-api-key").value = saved.elevenlabs_api_key_decrypted;
+        }
+        renderTtsModelOptions(
+            [],
+            saved.elevenlabs_model_id || "eleven_multilingual_v2"
+        );
+        $("#tts-output-format").value = saved.elevenlabs_output_format || "mp3_44100_128";
+        $("#tts-output-dir").value = saved.elevenlabs_output_dir || "";
+        savedTtsVoiceIds = saved.elevenlabs_speaker_voice_ids || {};
+        const voiceSettings = saved.elevenlabs_voice_settings || {};
+        $("#tts-stability").value = voiceSettings.stability ?? 0.5;
+        $("#tts-similarity-boost").value = voiceSettings.similarity_boost ?? 0.75;
+        $("#tts-style").value = voiceSettings.style ?? 0;
+        $("#tts-speed").value = voiceSettings.speed ?? 1;
+        $("#tts-use-speaker-boost").checked =
+            voiceSettings.use_speaker_boost !== false;
+        const chunkSettings = saved.elevenlabs_chunk_settings || {};
+        $("#tts-max-chars-per-chunk").value =
+            chunkSettings.max_chars_per_chunk ?? 1200;
+        $("#tts-max-segments-per-chunk").value =
+            chunkSettings.max_segments_per_chunk ?? 8;
+        $("#tts-split-on-speaker-change").checked =
+            chunkSettings.split_on_speaker_change === true;
+        syncTtsGenerationMode();
 
         const exo = saved.exo;
         if (exo) {
@@ -1384,9 +1462,12 @@ function populateSegmentEditor() {
     const editor = $("#seg-editor");
     if (previewSegments.length === 0) {
         hide(editor);
+        hide($("#seg-tts-status-panel"));
+        selectedTtsStatusRequestId += 1;
         return;
     }
     show(editor);
+    show($("#seg-tts-status-panel"));
     const seg = previewSegments[previewIndex];
 
     const select = $("#seg-edit-speaker");
@@ -1409,6 +1490,7 @@ function populateSegmentEditor() {
     const nextSeg = previewIndex < previewSegments.length - 1 ? previewSegments[previewIndex + 1] : null;
     $("#btn-seg-merge-prev").disabled = !(prevSeg && (prevSeg.speaker || "Speaker 1") === curSpeaker);
     $("#btn-seg-merge-next").disabled = !(nextSeg && (nextSeg.speaker || "Speaker 1") === curSpeaker);
+    scheduleSelectedTtsStatusRefresh();
 }
 
 function getKnownSpeakers() {
@@ -1560,6 +1642,562 @@ async function playSegmentAudio() {
         }
     } catch (e) {
         console.error("音声再生エラー:", e);
+    }
+}
+
+// --- ElevenLabs TTS（メインのセグメント編集状態から独立） ---
+const TTS_STATUS_LABELS = {
+    checking: "確認中",
+    not_generated: "未生成",
+    generated: "生成済み",
+    needs_regeneration: "要再生成",
+    error: "エラー",
+};
+
+function renderSelectedTtsStatus(item, fallbackStatus = "checking") {
+    if (previewSegments.length === 0) {
+        hide($("#seg-tts-status-panel"));
+        selectedTtsStatusItem = null;
+        return;
+    }
+    show($("#seg-tts-status-panel"));
+    selectedTtsStatusItem = item || null;
+    const status = item?.status || fallbackStatus;
+    const badge = $("#seg-tts-status");
+    badge.className = "seg-tts-status-badge tts-status-" + (
+        status === "checking" ? "not_generated" : status
+    );
+    badge.textContent = TTS_STATUS_LABELS[status] || status;
+
+    let detail = "";
+    if (item?.chunk_index != null) {
+        detail = "チャンク " + String(item.chunk_index + 1);
+    }
+    if (item?.error) detail = item.error;
+    $("#seg-tts-status-detail").textContent = detail;
+    $("#btn-seg-tts-play").disabled = (
+        ttsBusy || !item?.audio_path
+    );
+    $("#btn-seg-tts-regenerate").disabled = ttsBusy;
+}
+
+function updateSelectedTtsPanelFromStatuses(statuses) {
+    const item = (statuses || []).find(
+        status => Number(status.index) === previewIndex
+    );
+    renderSelectedTtsStatus(item, item ? item.status : "not_generated");
+}
+
+async function refreshSelectedTtsStatus() {
+    if (previewSegments.length === 0) {
+        renderSelectedTtsStatus(null, "not_generated");
+        return;
+    }
+    const requestId = ++selectedTtsStatusRequestId;
+    const requestedIndex = previewIndex;
+    renderSelectedTtsStatus(null, "checking");
+    try {
+        const result = await pywebview.api.get_tts_status(
+            collectTtsSettings()
+        );
+        if (
+            requestId !== selectedTtsStatusRequestId
+            || requestedIndex !== previewIndex
+        ) {
+            return;
+        }
+        if (result?.success) {
+            updateSelectedTtsPanelFromStatuses(result.segments);
+        } else {
+            renderSelectedTtsStatus(
+                { status: "error", error: result?.error || "状態取得失敗" },
+                "error"
+            );
+        }
+    } catch (e) {
+        if (
+            requestId === selectedTtsStatusRequestId
+            && requestedIndex === previewIndex
+        ) {
+            renderSelectedTtsStatus(
+                { status: "error", error: String(e) },
+                "error"
+            );
+        }
+    }
+}
+
+function scheduleSelectedTtsStatusRefresh() {
+    if (selectedTtsStatusTimer) clearTimeout(selectedTtsStatusTimer);
+    selectedTtsStatusTimer = setTimeout(
+        refreshSelectedTtsStatus, 150
+    );
+}
+
+function collectTtsSettings() {
+    const voiceIds = { ...savedTtsVoiceIds };
+    document.querySelectorAll(".tts-voice-id").forEach(input => {
+        voiceIds[input.dataset.speaker] = input.value.trim();
+    });
+    savedTtsVoiceIds = voiceIds;
+    return {
+        api_key: $("#tts-api-key").value.trim(),
+        model_id: $("#tts-model-id").value.trim() || "eleven_multilingual_v2",
+        output_format: $("#tts-output-format").value.trim() || "mp3_44100_128",
+        speaker_voice_ids: voiceIds,
+        output_dir: $("#tts-output-dir").value.trim(),
+        voice_settings: {
+            stability: Number($("#tts-stability").value),
+            similarity_boost: Number($("#tts-similarity-boost").value),
+            style: Number($("#tts-style").value),
+            use_speaker_boost: $("#tts-use-speaker-boost").checked,
+            speed: Number($("#tts-speed").value),
+        },
+        apply_language_text_normalization: false,
+        apply_text_normalization: "auto",
+        generation_mode: $("#tts-generation-mode").value,
+        chunk_settings: {
+            max_chars_per_chunk: Number(
+                $("#tts-max-chars-per-chunk").value
+            ),
+            max_segments_per_chunk: Number(
+                $("#tts-max-segments-per-chunk").value
+            ),
+            split_on_speaker_change:
+                $("#tts-split-on-speaker-change").checked,
+        },
+    };
+}
+
+function scheduleTtsSettingsSave() {
+    if (ttsSaveTimer) clearTimeout(ttsSaveTimer);
+    ttsSaveTimer = setTimeout(async () => {
+        try {
+            await pywebview.api.save_tts_settings(collectTtsSettings());
+        } catch (e) {
+            console.error("TTS設定保存エラー:", e);
+        }
+    }, 500);
+}
+
+function renderTtsVoiceSettings() {
+    const speakers = [...new Set(
+        previewSegments.map(seg => seg.speaker || "Speaker 1")
+    )].sort();
+    const container = $("#tts-voice-settings");
+    container.innerHTML = "";
+    for (const speaker of speakers) {
+        const item = document.createElement("div");
+        item.className = "setting-item";
+        const label = document.createElement("label");
+        label.textContent = speaker + " voice";
+        const row = document.createElement("div");
+        row.className = "tts-voice-select-row";
+        const select = document.createElement("select");
+        select.className = "tts-voice-id";
+        select.dataset.speaker = speaker;
+        const selectedVoiceId = savedTtsVoiceIds[speaker] || "";
+        const emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        emptyOption.textContent = "ボイスを選択";
+        select.appendChild(emptyOption);
+        let selectedFound = false;
+        for (const voice of availableTtsVoices) {
+            const option = document.createElement("option");
+            option.value = voice.voice_id;
+            option.textContent = voice.name;
+            if (voice.voice_id === selectedVoiceId) selectedFound = true;
+            select.appendChild(option);
+        }
+        if (selectedVoiceId && !selectedFound) {
+            const option = document.createElement("option");
+            option.value = selectedVoiceId;
+            option.textContent = selectedVoiceId + "（保存済み）";
+            select.appendChild(option);
+        }
+        select.value = selectedVoiceId;
+        const previewButton = document.createElement("button");
+        previewButton.type = "button";
+        previewButton.className = "btn btn-small";
+        previewButton.textContent = "試聴";
+        previewButton.title = "ボイス試聴";
+        const updatePreviewState = () => {
+            const voice = availableTtsVoices.find(
+                item => item.voice_id === select.value
+            );
+            previewButton.disabled = !voice?.preview_url;
+        };
+        select.addEventListener("change", async () => {
+            savedTtsVoiceIds[speaker] = select.value;
+            updatePreviewState();
+            scheduleTtsSettingsSave();
+            await refreshTtsStatus();
+        });
+        previewButton.addEventListener("click", () => {
+            previewTtsVoice(select.value);
+        });
+        updatePreviewState();
+        row.append(select, previewButton);
+        item.append(label, row);
+        container.appendChild(item);
+    }
+}
+
+function renderTtsModelOptions(models, selectedModelId) {
+    availableTtsModels = models;
+    const select = $("#tts-model-id");
+    select.innerHTML = "";
+    const selected = selectedModelId || "eleven_multilingual_v2";
+    let selectedFound = false;
+    for (const model of models) {
+        const option = document.createElement("option");
+        option.value = model.model_id;
+        option.textContent = model.name;
+        if (model.model_id === selected) selectedFound = true;
+        select.appendChild(option);
+    }
+    if (!selectedFound) {
+        const option = document.createElement("option");
+        option.value = selected;
+        option.textContent = selected;
+        select.appendChild(option);
+    }
+    select.value = selected;
+    syncTtsGenerationMode();
+}
+
+function syncTtsGenerationMode() {
+    const modelId = $("#tts-model-id").value;
+    const isV3 = modelId === "eleven_v3";
+    const isMultilingual = modelId === "eleven_multilingual_v2";
+    $("#tts-generation-mode").value = isV3
+        ? "chunk_v3"
+        : "per_segment_context";
+    $("#tts-v3-warning").classList.toggle("hidden", !isV3);
+    $("#tts-multilingual-info").classList.toggle(
+        "hidden", !isMultilingual
+    );
+    $("#tts-chunk-settings").classList.toggle("hidden", !isV3);
+    $("#btn-generate-tts-selected").textContent = isV3
+        ? "選択チャンクTTS生成"
+        : "選択セグメントTTS生成";
+}
+
+async function fetchTtsVoices() {
+    const button = $("#btn-fetch-tts-voices");
+    button.disabled = true;
+    const originalText = button.textContent;
+    button.textContent = "取得中...";
+    try {
+        const currentVoiceIds = {};
+        document.querySelectorAll(".tts-voice-id").forEach(select => {
+            currentVoiceIds[select.dataset.speaker] = select.value;
+        });
+        const result = await pywebview.api.list_elevenlabs_voices(
+            $("#tts-api-key").value.trim() || null
+        );
+        if (!result?.success) {
+            alert("ボイス一覧取得エラー: " + (result?.error || "不明"));
+            return;
+        }
+        availableTtsVoices = result.voices || [];
+        savedTtsVoiceIds = currentVoiceIds;
+        renderTtsVoiceSettings();
+    } catch (e) {
+        alert("ボイス一覧取得エラー: " + e);
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
+async function fetchTtsModels() {
+    const button = $("#btn-fetch-tts-models");
+    button.disabled = true;
+    const originalText = button.textContent;
+    button.textContent = "取得中...";
+    try {
+        const selected = $("#tts-model-id").value
+            || "eleven_multilingual_v2";
+        const result = await pywebview.api.list_elevenlabs_models(
+            $("#tts-api-key").value.trim() || null
+        );
+        if (!result?.success) {
+            alert("モデル一覧取得エラー: " + (result?.error || "不明"));
+            return;
+        }
+        const models = result.models || [];
+        const selectedIsAvailable = models.some(
+            model => model.model_id === selected
+        );
+        const defaultIsAvailable = models.some(
+            model => model.model_id === "eleven_multilingual_v2"
+        );
+        const nextSelected = selectedIsAvailable
+            ? selected
+            : defaultIsAvailable
+                ? "eleven_multilingual_v2"
+                : (models[0]?.model_id || "eleven_multilingual_v2");
+        renderTtsModelOptions(models, nextSelected);
+        scheduleTtsSettingsSave();
+        await refreshTtsStatus();
+    } catch (e) {
+        alert("モデル一覧取得エラー: " + e);
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
+function previewTtsVoice(voiceId) {
+    const voice = availableTtsVoices.find(
+        item => item.voice_id === voiceId
+    );
+    if (!voice?.preview_url) return;
+    if (ttsVoicePreviewAudio) ttsVoicePreviewAudio.pause();
+    ttsVoicePreviewAudio = new Audio(voice.preview_url);
+    ttsVoicePreviewAudio.play().catch(error => {
+        alert("ボイス試聴エラー: " + error);
+    });
+}
+
+async function openTtsModal() {
+    if (previewSegments.length === 0) return;
+    ttsSelectedIndex = Math.min(previewIndex, previewSegments.length - 1);
+    renderTtsVoiceSettings();
+    syncTtsGenerationMode();
+    for (const id of [
+        "tts-api-key", "tts-model-id", "tts-output-format", "tts-output-dir",
+        "tts-stability", "tts-similarity-boost", "tts-style", "tts-speed",
+        "tts-use-speaker-boost",
+        "tts-max-chars-per-chunk", "tts-max-segments-per-chunk",
+        "tts-split-on-speaker-change",
+    ]) {
+        const input = $("#" + id);
+        if (!input.dataset.ttsSaveBound) {
+            input.addEventListener("change", async () => {
+                if (id === "tts-model-id") syncTtsGenerationMode();
+                scheduleTtsSettingsSave();
+                if (id !== "tts-api-key" && id !== "tts-output-dir") {
+                    await refreshTtsStatus();
+                }
+            });
+            input.dataset.ttsSaveBound = "1";
+        }
+    }
+    show($("#tts-modal"));
+    await refreshTtsStatus();
+}
+
+function closeTtsModal() {
+    if (ttsBusy) return;
+    if (ttsVoicePreviewAudio) {
+        ttsVoicePreviewAudio.pause();
+        ttsVoicePreviewAudio = null;
+    }
+    scheduleTtsSettingsSave();
+    hide($("#tts-modal"));
+}
+
+async function selectTtsOutputDir() {
+    try {
+        const path = await pywebview.api.select_tts_output_dir();
+        if (path) {
+            $("#tts-output-dir").value = path;
+            scheduleTtsSettingsSave();
+            await refreshTtsStatus();
+        }
+    } catch (e) {
+        alert("出力フォルダの選択に失敗しました: " + e);
+    }
+}
+
+async function saveTtsScript(formatType) {
+    try {
+        const result = await pywebview.api.save_tts_script(
+            formatType, collectTtsSettings()
+        );
+        if (result && !result.success && result.error !== "キャンセルされました") {
+            alert("台本保存エラー: " + result.error);
+        }
+    } catch (e) {
+        alert("台本保存エラー: " + e);
+    }
+}
+
+async function saveCombinedTtsWav() {
+    if (ttsBusy) return;
+    setTtsBusy(true);
+    hide($("#btn-cancel-tts"));
+    updateTtsProgress({ progress: 0, message: "生成済みTTS音声を結合中..." });
+    try {
+        const result = await pywebview.api.save_combined_tts_wav(
+            collectTtsSettings()
+        );
+        if (!result?.success) {
+            if (result?.error !== "キャンセルされました") {
+                alert("結合WAV保存エラー: " + (result?.error || "不明なエラー"));
+            }
+            return;
+        }
+        const skipped = result.skipped || [];
+        let message = `結合WAVを保存しました（${result.included}件）\n${result.path}`;
+        if (skipped.length) {
+            const labels = skipped.map(item =>
+                `${item.kind === "chunk" ? "チャンク" : "セグメント"} ${item.index + 1}`
+            );
+            message += `\n\n未生成・要再生成などのためスキップ: ${labels.join(", ")}`;
+        }
+        updateTtsProgress({ progress: 1, message: "結合WAVを保存しました" });
+        alert(message);
+    } catch (e) {
+        alert("結合WAV保存エラー: " + e);
+    } finally {
+        setTtsBusy(false);
+    }
+}
+
+function renderTtsTable(statuses) {
+    const body = $("#tts-table-body");
+    body.innerHTML = "";
+    for (const item of statuses) {
+        const row = document.createElement("tr");
+        row.dataset.index = item.index;
+        if (item.index === ttsSelectedIndex) row.classList.add("active");
+        row.addEventListener("click", () => {
+            ttsSelectedIndex = item.index;
+            document.querySelectorAll("#tts-table-body tr").forEach(tr => {
+                tr.classList.toggle(
+                    "active", Number(tr.dataset.index) === ttsSelectedIndex
+                );
+            });
+        });
+        const indexCell = document.createElement("td");
+        indexCell.textContent = String(item.index + 1);
+        const speakerCell = document.createElement("td");
+        speakerCell.textContent = item.speaker;
+        const textCell = document.createElement("td");
+        textCell.className = "tts-text-preview";
+        textCell.textContent = item.text.slice(0, 80);
+        textCell.title = item.text;
+        const statusCell = document.createElement("td");
+        statusCell.className = "tts-status-" + item.status;
+        statusCell.textContent = TTS_STATUS_LABELS[item.status] || item.status;
+        if (item.error) statusCell.title = item.error;
+        const actionsCell = document.createElement("td");
+        actionsCell.className = "tts-col-actions";
+        const playButton = document.createElement("button");
+        playButton.className = "btn btn-small";
+        playButton.textContent = "▶";
+        playButton.title = "TTS再生";
+        playButton.disabled = !item.audio_path;
+        playButton.addEventListener("click", event => {
+            event.stopPropagation();
+            playTts(item.index);
+        });
+        const regenerateButton = document.createElement("button");
+        regenerateButton.className = "btn btn-small";
+        regenerateButton.textContent = "再生成";
+        regenerateButton.addEventListener("click", event => {
+            event.stopPropagation();
+            generateOneTts(item.index);
+        });
+        actionsCell.append(playButton, regenerateButton);
+        row.append(indexCell, speakerCell, textCell, statusCell, actionsCell);
+        body.appendChild(row);
+    }
+}
+
+async function refreshTtsStatus() {
+    try {
+        const result = await pywebview.api.get_tts_status(collectTtsSettings());
+        if (result?.success) {
+            renderTtsTable(result.segments);
+            updateSelectedTtsPanelFromStatuses(result.segments);
+        } else if (result?.error) {
+            alert("TTS状態更新エラー: " + result.error);
+        }
+    } catch (e) {
+        alert("TTS状態更新エラー: " + e);
+    }
+}
+
+function setTtsBusy(busy) {
+    ttsBusy = busy;
+    document.querySelectorAll(".tts-action-row button").forEach(button => {
+        button.disabled = busy;
+    });
+    $("#btn-cancel-tts").disabled = false;
+    if (busy) {
+        show($("#btn-cancel-tts"));
+        show($("#tts-progress-area"));
+    } else {
+        hide($("#btn-cancel-tts"));
+    }
+    renderSelectedTtsStatus(
+        selectedTtsStatusItem,
+        selectedTtsStatusItem?.status || "checking"
+    );
+}
+
+function updateTtsProgress(status) {
+    if (!status) return;
+    const value = Math.max(0, Math.min(1, status.progress || 0));
+    $("#tts-progress-fill").style.width = String(value * 100) + "%";
+    $("#tts-progress-text").textContent = status.message || "";
+}
+
+async function runTtsGeneration(call) {
+    if (ttsBusy) return;
+    setTtsBusy(true);
+    const timer = setInterval(async () => {
+        try {
+            updateTtsProgress(await pywebview.api.get_tts_progress());
+        } catch (e) { /* operation may be finishing */ }
+    }, 300);
+    try {
+        const result = await call();
+        updateTtsProgress(await pywebview.api.get_tts_progress());
+        if (result && !result.success && !result.cancelled) {
+            const detail = result.error
+                || ("生成エラー: " + (result.errors || 0) + "件");
+            alert(detail);
+        }
+    } catch (e) {
+        alert("TTS生成エラー: " + e);
+    } finally {
+        clearInterval(timer);
+        setTtsBusy(false);
+        await refreshTtsStatus();
+    }
+}
+
+async function generateAllTts() {
+    const ttsSettings = collectTtsSettings();
+    await runTtsGeneration(
+        () => pywebview.api.generate_tts_for_all(ttsSettings, false)
+    );
+}
+
+async function generateOneTts(index) {
+    ttsSelectedIndex = index;
+    const ttsSettings = collectTtsSettings();
+    await runTtsGeneration(
+        () => pywebview.api.generate_tts_for_segment(index, ttsSettings, true)
+    );
+}
+
+async function playTts(index) {
+    try {
+        ttsSelectedIndex = index;
+        const result = await pywebview.api.play_tts_segment(
+            index, collectTtsSettings()
+        );
+        if (result && !result.success) {
+            alert("TTS再生エラー: " + result.error);
+        }
+    } catch (e) {
+        alert("TTS再生エラー: " + e);
     }
 }
 

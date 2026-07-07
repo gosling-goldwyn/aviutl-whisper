@@ -2508,3 +2508,794 @@ class TestOnClosingBehavior:
         on_closing()
         mock_win._eval_js_event.wait(timeout=1.0)
         assert mock_win.confirmation_dialog_called is False
+
+
+# ============================================================
+# ElevenLabs TTS
+# ============================================================
+
+class TestElevenLabsTts:
+    def _segments(self):
+        from aviutl_whisper.transcriber import TranscriptionSegment
+        return [
+            TranscriptionSegment(
+                start=1.2, end=4.5, text="今日はこの映画について話します。",
+                speaker="Speaker 1",
+            ),
+            TranscriptionSegment(
+                start=4.5, end=8.1, text="まず撮影が印象的でした。",
+                speaker="Speaker 2",
+            ),
+            TranscriptionSegment(
+                start=8.1, end=9.0, text="同感です。",
+                speaker="Speaker 1",
+            ),
+        ]
+
+    def _settings(self, tmp_path):
+        return {
+            "api_key": "secret-key",
+            "model_id": "eleven_multilingual_v2",
+            "output_format": "mp3_44100_128",
+            "speaker_voice_ids": {
+                "Speaker 1": "voice-one",
+                "Speaker 2": "voice-two",
+            },
+            "output_dir": str(tmp_path),
+        }
+
+    def test_script_txt_format(self):
+        from aviutl_whisper.elevenlabs_tts import export_script_txt
+        text = export_script_txt(self._segments()[:2])
+        assert (
+            "001 [00:00:01.200 - 00:00:04.500] Speaker 1:\n"
+            "今日はこの映画について話します。"
+        ) in text
+        assert (
+            "002 [00:00:04.500 - 00:00:08.100] Speaker 2:\n"
+            "まず撮影が印象的でした。"
+        ) in text
+        assert "\n\n002 " in text
+
+    def test_script_csv_columns(self, tmp_path):
+        import csv
+        import io
+        from aviutl_whisper.elevenlabs_tts import export_script_csv
+        text = export_script_csv(self._segments(), self._settings(tmp_path))
+        rows = list(csv.reader(io.StringIO(text)))
+        assert rows[0] == [
+            "index", "start", "end", "speaker", "text",
+            "voice_id", "audio_path", "tts_status",
+        ]
+        assert rows[1][0:6] == [
+            "1", "00:00:01.200", "00:00:04.500", "Speaker 1",
+            "今日はこの映画について話します。", "voice-one",
+        ]
+
+    def test_request_body_contains_context(self, tmp_path):
+        import json
+        from aviutl_whisper.elevenlabs_tts import generate_segment
+
+        captured = {}
+
+        class Response:
+            def read(self):
+                return b"mp3-bytes"
+
+        def opener(request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return Response()
+
+        result = generate_segment(
+            self._segments(), 1, self._settings(tmp_path), opener=opener
+        )
+        body = json.loads(captured["request"].data.decode("utf-8"))
+        assert body["text"] == "まず撮影が印象的でした。"
+        assert body["previous_text"] == "今日はこの映画について話します。"
+        assert body["next_text"] == "同感です。"
+        assert body["model_id"] == "eleven_multilingual_v2"
+        assert body["voice_settings"] == {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+            "style": 0.0,
+            "use_speaker_boost": True,
+            "speed": 1.0,
+        }
+        assert "apply_language_text_normalization" not in body
+        assert "language_code" not in body
+        assert body["apply_text_normalization"] == "auto"
+        assert result["status"] == "generated"
+
+    def test_v3_payload_excludes_unsupported_fields(self):
+        from aviutl_whisper.elevenlabs_tts import (
+            build_elevenlabs_payload,
+            sanitize_payload_for_model,
+        )
+
+        payload = build_elevenlabs_payload(
+            text="テスト",
+            model_id="eleven_v3",
+            previous_text="前",
+            next_text="次",
+            previous_request_ids=["prev-id"],
+            next_request_ids=["next-id"],
+            voice_settings={"stability": 0.5},
+            apply_language_text_normalization=True,
+            language_code="ja",
+        )
+        payload = sanitize_payload_for_model(payload, "eleven_v3")
+        for key in (
+            "previous_text",
+            "next_text",
+            "previous_request_ids",
+            "next_request_ids",
+            "apply_language_text_normalization",
+            "language_code",
+        ):
+            assert key not in payload
+
+    def test_multilingual_payload_keeps_context_without_language_normalization(
+        self,
+    ):
+        from aviutl_whisper.elevenlabs_tts import (
+            build_elevenlabs_payload,
+            sanitize_payload_for_model,
+        )
+
+        payload = build_elevenlabs_payload(
+            text="現在",
+            model_id="eleven_multilingual_v2",
+            previous_text="前",
+            next_text="次",
+            apply_language_text_normalization=True,
+            language_code="ja",
+        )
+        payload = sanitize_payload_for_model(
+            payload, "eleven_multilingual_v2"
+        )
+        assert payload["previous_text"] == "前"
+        assert payload["next_text"] == "次"
+        assert "apply_language_text_normalization" not in payload
+        assert "language_code" not in payload
+
+    def test_compatibility_400_retries_once_without_optional_fields(self):
+        import io
+        import json
+        import urllib.error
+        from aviutl_whisper.elevenlabs_tts import _request_audio
+
+        payloads = []
+
+        class Response:
+            def read(self):
+                return b"mp3-bytes"
+
+        def opener(request, timeout):
+            payloads.append(json.loads(request.data.decode("utf-8")))
+            if len(payloads) == 1:
+                error_body = json.dumps({
+                    "detail": {
+                        "message": (
+                            "previous_text is unsupported_model"
+                        )
+                    }
+                }).encode("utf-8")
+                raise urllib.error.HTTPError(
+                    request.full_url,
+                    400,
+                    "Bad Request",
+                    hdrs=None,
+                    fp=io.BytesIO(error_body),
+                )
+            return Response()
+
+        audio = _request_audio(
+            text="現在",
+            voice_id="voice-one",
+            model_id="eleven_multilingual_v2",
+            output_format="mp3_44100_128",
+            api_key="test-key",
+            previous_text="前",
+            next_text="次",
+            voice_settings={"stability": 0.5},
+            apply_language_text_normalization=True,
+            apply_text_normalization="auto",
+            opener=opener,
+        )
+        assert audio == b"mp3-bytes"
+        assert len(payloads) == 2
+        assert payloads[0]["previous_text"] == "前"
+        assert payloads[0]["next_text"] == "次"
+        for key in (
+            "previous_text",
+            "next_text",
+            "previous_request_ids",
+            "next_request_ids",
+            "apply_language_text_normalization",
+            "language_code",
+            "apply_text_normalization",
+        ):
+            assert key not in payloads[1]
+
+    def test_list_voices_uses_v2_api_and_normalizes(self):
+        import json
+        from aviutl_whisper.elevenlabs_tts import list_voices
+
+        captured = {}
+
+        class Response:
+            def read(self):
+                return json.dumps({
+                    "voices": [
+                        {
+                            "voice_id": "v2",
+                            "name": "Zulu",
+                            "preview_url": "https://example.test/zulu.mp3",
+                        },
+                        {"voice_id": "v1", "name": "Alpha"},
+                    ]
+                }).encode("utf-8")
+
+        def opener(request, timeout):
+            captured["request"] = request
+            return Response()
+
+        voices = list_voices("test-key", opener=opener)
+        assert captured["request"].full_url == (
+            "https://api.elevenlabs.io/v2/voices"
+        )
+        assert captured["request"].method == "GET"
+        assert captured["request"].get_header("Xi-api-key") == "test-key"
+        assert voices == [
+            {"voice_id": "v1", "name": "Alpha", "preview_url": ""},
+            {
+                "voice_id": "v2",
+                "name": "Zulu",
+                "preview_url": "https://example.test/zulu.mp3",
+            },
+        ]
+
+    def test_list_models_filters_non_tts_models(self):
+        import json
+        from aviutl_whisper.elevenlabs_tts import list_models
+
+        class Response:
+            def read(self):
+                return json.dumps([
+                    {
+                        "model_id": "tts-model",
+                        "name": "TTS Model",
+                        "can_do_text_to_speech": True,
+                    },
+                    {
+                        "model_id": "other-model",
+                        "name": "Other",
+                        "can_do_text_to_speech": False,
+                    },
+                ]).encode("utf-8")
+
+        models = list_models(
+            "test-key", opener=lambda request, timeout: Response()
+        )
+        assert models == [
+            {"model_id": "tts-model", "name": "TTS Model"}
+        ]
+
+    def test_missing_voice_id_is_error(self, tmp_path):
+        import pytest
+        from aviutl_whisper.elevenlabs_tts import (
+            ElevenLabsTtsError, generate_segment,
+        )
+        tts_settings = self._settings(tmp_path)
+        del tts_settings["speaker_voice_ids"]["Speaker 2"]
+        with pytest.raises(ElevenLabsTtsError, match="voice_id"):
+            generate_segment(self._segments(), 1, tts_settings)
+
+    def test_matching_manifest_skips_existing_audio(self, tmp_path):
+        from aviutl_whisper.elevenlabs_tts import generate_segment
+        calls = []
+
+        class Response:
+            def read(self):
+                return b"mp3-bytes"
+
+        def opener(request, timeout):
+            calls.append(request)
+            return Response()
+
+        tts_settings = self._settings(tmp_path)
+        generate_segment(self._segments(), 0, tts_settings, opener=opener)
+        result = generate_segment(
+            self._segments(), 0, tts_settings, opener=opener
+        )
+        assert result["status"] == "skipped"
+        assert len(calls) == 1
+
+    def test_force_true_regenerates(self, tmp_path):
+        from aviutl_whisper.elevenlabs_tts import generate_segment
+        calls = []
+
+        class Response:
+            def read(self):
+                return b"mp3-bytes"
+
+        def opener(request, timeout):
+            calls.append(request)
+            return Response()
+
+        tts_settings = self._settings(tmp_path)
+        generate_segment(self._segments(), 0, tts_settings, opener=opener)
+        result = generate_segment(
+            self._segments(), 0, tts_settings, force=True, opener=opener
+        )
+        assert result["status"] == "generated"
+        assert len(calls) == 2
+
+    def test_changed_text_needs_regeneration(self, tmp_path):
+        from aviutl_whisper.elevenlabs_tts import (
+            generate_segment, get_segment_statuses,
+        )
+
+        class Response:
+            def read(self):
+                return b"mp3-bytes"
+
+        segments = self._segments()
+        tts_settings = self._settings(tmp_path)
+        generate_segment(
+            segments, 0, tts_settings,
+            opener=lambda request, timeout: Response(),
+        )
+        segments[0].text = "変更後の文章"
+        statuses = get_segment_statuses(segments, tts_settings)
+        assert statuses[0]["status"] == "needs_regeneration"
+
+    def test_model_voice_and_voice_settings_change_need_regeneration(
+        self, tmp_path
+    ):
+        from aviutl_whisper.elevenlabs_tts import (
+            generate_segment, get_segment_statuses,
+        )
+
+        class Response:
+            def read(self):
+                return b"mp3-bytes"
+
+        segments = self._segments()
+        original = self._settings(tmp_path)
+        generate_segment(
+            segments, 0, original,
+            opener=lambda request, timeout: Response(),
+        )
+
+        changed_model = dict(original, model_id="new-model")
+        assert (
+            get_segment_statuses(segments, changed_model)[0]["status"]
+            == "needs_regeneration"
+        )
+
+        changed_voice = {
+            **original,
+            "speaker_voice_ids": {
+                **original["speaker_voice_ids"],
+                "Speaker 1": "different-voice",
+            },
+        }
+        assert (
+            get_segment_statuses(segments, changed_voice)[0]["status"]
+            == "needs_regeneration"
+        )
+
+        changed_settings = {
+            **original,
+            "voice_settings": {"stability": 0.8},
+        }
+        assert (
+            get_segment_statuses(segments, changed_settings)[0]["status"]
+            == "needs_regeneration"
+        )
+
+    def test_api_key_is_not_saved_in_plain_text(self, tmp_path, monkeypatch):
+        import json
+        from aviutl_whisper import settings
+        from aviutl_whisper.api import Api
+
+        settings_path = tmp_path / "settings.json"
+        monkeypatch.setattr(settings, "_get_settings_path", lambda: settings_path)
+        monkeypatch.setattr(
+            settings, "encrypt_token", lambda token: "dpapi-encrypted-value"
+        )
+        result = Api().save_tts_settings(self._settings(tmp_path))
+        raw = settings_path.read_text(encoding="utf-8")
+        saved = json.loads(raw)
+        assert result["success"] is True
+        assert "secret-key" not in raw
+        assert (
+            saved["elevenlabs_api_key_encrypted"]
+            == "dpapi-encrypted-value"
+        )
+
+    def test_api_csv_script_has_utf8_bom(self, tmp_path, monkeypatch):
+        from aviutl_whisper import settings
+        from aviutl_whisper.api import Api
+
+        monkeypatch.setattr(
+            settings, "_get_settings_path", lambda: tmp_path / "settings.json"
+        )
+        monkeypatch.setattr(
+            settings, "encrypt_token", lambda token: "encrypted"
+        )
+        api = Api()
+        api._last_segments = self._segments()
+        window = MockWindow()
+        output_path = tmp_path / "script.csv"
+        window._save_dialog_result = str(output_path)
+        api.window = window
+        result = api.save_tts_script(
+            "csv", self._settings(tmp_path / "audio")
+        )
+        assert result["success"] is True
+        assert output_path.read_bytes().startswith(b"\xef\xbb\xbf")
+
+    def test_v3_chunk_request_omits_all_context_keys(self, tmp_path):
+        import json
+        from aviutl_whisper.elevenlabs_tts import generate_chunk
+
+        captured = {}
+
+        class Response:
+            def read(self):
+                return b"mp3-bytes"
+
+        def opener(request, timeout):
+            captured["body"] = json.loads(
+                request.data.decode("utf-8")
+            )
+            return Response()
+
+        tts_settings = {
+            **self._settings(tmp_path),
+            "model_id": "eleven_v3",
+            "generation_mode": "chunk_v3",
+            "chunk_settings": {
+                "max_chars_per_chunk": 1200,
+                "max_segments_per_chunk": 8,
+                "split_on_speaker_change": False,
+            },
+        }
+        result = generate_chunk(
+            self._segments(), 0, tts_settings, opener=opener
+        )
+        body = captured["body"]
+        assert body["model_id"] == "eleven_v3"
+        assert body["text"].startswith("Speaker 1:")
+        for key in (
+            "previous_text",
+            "next_text",
+            "previous_request_ids",
+            "next_request_ids",
+        ):
+            assert key not in body
+        assert result["audio_path"].endswith(
+            "chunks\\chunk_0001.mp3"
+        )
+
+    def test_build_chunks_respects_order_limits_and_speaker_split(self):
+        from aviutl_whisper.elevenlabs_tts import build_chunks
+        from aviutl_whisper.transcriber import TranscriptionSegment
+
+        segments = [
+            TranscriptionSegment(0, 1, "一", "Speaker 1"),
+            TranscriptionSegment(1, 2, "二", "Speaker 1"),
+            TranscriptionSegment(2, 3, "三", "Speaker 1"),
+            TranscriptionSegment(3, 4, "四", "Speaker 2"),
+        ]
+        tts_settings = {
+            "model_id": "eleven_v3",
+            "speaker_voice_ids": {
+                "Speaker 1": "voice-one",
+                "Speaker 2": "voice-two",
+            },
+            "chunk_settings": {
+                "max_chars_per_chunk": 1200,
+                "max_segments_per_chunk": 2,
+                "split_on_speaker_change": False,
+            },
+        }
+        chunks = build_chunks(segments, tts_settings)
+        assert [chunk["segment_indices"] for chunk in chunks] == [
+            [0, 1], [2], [3],
+        ]
+        assert chunks[0]["text"] == (
+            "Speaker 1: 一\nSpeaker 1: 二"
+        )
+        assert chunks[2]["voice_ids"] == {
+            "Speaker 2": "voice-two"
+        }
+
+    def test_chunk_manifest_skip_force_and_required_fields(
+        self, tmp_path
+    ):
+        import json
+        from aviutl_whisper.elevenlabs_tts import generate_chunk
+
+        calls = []
+
+        class Response:
+            def read(self):
+                return b"mp3-bytes"
+
+        def opener(request, timeout):
+            calls.append(request)
+            return Response()
+
+        tts_settings = {
+            **self._settings(tmp_path),
+            "model_id": "eleven_v3",
+            "chunk_settings": {
+                "max_chars_per_chunk": 1200,
+                "max_segments_per_chunk": 8,
+                "split_on_speaker_change": False,
+            },
+        }
+        generate_chunk(
+            self._segments(), 0, tts_settings, opener=opener
+        )
+        skipped = generate_chunk(
+            self._segments(), 0, tts_settings, opener=opener
+        )
+        forced = generate_chunk(
+            self._segments(), 0, tts_settings,
+            force=True, opener=opener,
+        )
+        assert skipped["status"] == "skipped"
+        assert forced["status"] == "generated"
+        assert len(calls) == 2
+
+        manifest = json.loads(
+            (tmp_path / "tts_manifest.json").read_text("utf-8")
+        )
+        entry = manifest["chunks"]["0"]
+        assert manifest["version"] == 2
+        assert entry["chunk_index"] == 0
+        assert entry["segment_indices"] == [0]
+        assert entry["model_id"] == "eleven_v3"
+        assert entry["voice_ids"] == {"Speaker 1": "voice-one"}
+        assert entry["audio_path"] == "chunks/chunk_0001.mp3"
+        assert entry["text_hash"]
+        assert entry["generated_at"]
+
+    def test_chunk_changes_need_regeneration(self, tmp_path):
+        from aviutl_whisper.elevenlabs_tts import (
+            generate_chunk, get_chunk_statuses,
+        )
+
+        class Response:
+            def read(self):
+                return b"mp3-bytes"
+
+        segments = self._segments()
+        original = {
+            **self._settings(tmp_path),
+            "model_id": "eleven_v3",
+            "chunk_settings": {
+                "max_chars_per_chunk": 1200,
+                "max_segments_per_chunk": 8,
+                "split_on_speaker_change": False,
+            },
+        }
+        generate_chunk(
+            segments, 0, original,
+            opener=lambda request, timeout: Response(),
+        )
+        changed_text = self._segments()
+        changed_text[0].text = "変更"
+        assert get_chunk_statuses(
+            changed_text, original
+        )[0]["status"] == "needs_regeneration"
+
+        changed_voice = {
+            **original,
+            "speaker_voice_ids": {
+                **original["speaker_voice_ids"],
+                "Speaker 1": "new-voice",
+            },
+        }
+        assert get_chunk_statuses(
+            segments, changed_voice
+        )[0]["status"] == "needs_regeneration"
+
+        changed_limits = {
+            **original,
+            "chunk_settings": {
+                **original["chunk_settings"],
+                "max_chars_per_chunk": 999,
+            },
+        }
+        assert get_chunk_statuses(
+            segments, changed_limits
+        )[0]["status"] == "needs_regeneration"
+
+    def test_export_combined_wav_uses_generated_segments_in_order(
+        self, tmp_path
+    ):
+        import json
+        from pydub import AudioSegment
+        from aviutl_whisper.elevenlabs_tts import (
+            compute_text_hash,
+            export_combined_wav,
+            get_combined_audio_items,
+            normalize_voice_settings,
+        )
+
+        segments = self._segments()
+        tts_settings = self._settings(tmp_path)
+        voice_settings = normalize_voice_settings(tts_settings)
+        manifest = {"version": 1, "segments": {}, "chunks": {}}
+        for index, duration in ((0, 100), (2, 250)):
+            path = tmp_path / f"segment_{index}.wav"
+            AudioSegment.silent(duration=duration, frame_rate=44100).export(
+                path, format="wav"
+            )
+            speaker = segments[index].speaker
+            manifest["segments"][str(index)] = {
+                "text_hash": compute_text_hash(
+                    segments[index],
+                    tts_settings["speaker_voice_ids"][speaker],
+                    tts_settings["model_id"],
+                    tts_settings["output_format"],
+                    voice_settings,
+                    False,
+                    "auto",
+                ),
+                "audio_path": path.name,
+                "status": "generated",
+            }
+        (tmp_path / "tts_manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+
+        available, skipped = get_combined_audio_items(
+            segments, tts_settings
+        )
+        assert [item["index"] for item in available] == [0, 2]
+        assert [(item["index"], item["status"]) for item in skipped] == [
+            (1, "not_generated")
+        ]
+
+        output_path = tmp_path / "combined.wav"
+        result = export_combined_wav(
+            segments, tts_settings, output_path
+        )
+        combined = AudioSegment.from_wav(output_path)
+        assert result["included"] == 2
+        assert result["skipped"][0]["index"] == 1
+        assert 345 <= len(combined) <= 355
+
+    def test_export_combined_wav_does_not_duplicate_v3_chunks(
+        self, tmp_path
+    ):
+        import json
+        from pydub import AudioSegment
+        from aviutl_whisper.elevenlabs_tts import (
+            build_chunks,
+            export_combined_wav,
+            get_combined_audio_items,
+        )
+
+        segments = self._segments()
+        tts_settings = {
+            **self._settings(tmp_path),
+            "model_id": "eleven_v3",
+            "generation_mode": "chunk_v3",
+            "chunk_settings": {
+                "max_chars_per_chunk": 1200,
+                "max_segments_per_chunk": 2,
+                "split_on_speaker_change": False,
+            },
+        }
+        chunks = build_chunks(segments, tts_settings)
+        chunks_dir = tmp_path / "chunks"
+        chunks_dir.mkdir()
+        manifest = {"version": 2, "segments": {}, "chunks": {}}
+        expected_duration = 0
+        for chunk in chunks:
+            duration = 100 + chunk["chunk_index"] * 50
+            expected_duration += duration
+            relative_path = (
+                f"chunks/chunk_{chunk['chunk_index'] + 1:04d}.wav"
+            )
+            AudioSegment.silent(
+                duration=duration, frame_rate=44100
+            ).export(tmp_path / relative_path, format="wav")
+            manifest["chunks"][str(chunk["chunk_index"])] = {
+                "chunk_index": chunk["chunk_index"],
+                "segment_indices": chunk["segment_indices"],
+                "text_hash": chunk["text_hash"],
+                "audio_path": relative_path,
+                "status": "generated",
+            }
+        (tmp_path / "tts_manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+
+        available, skipped = get_combined_audio_items(
+            segments, tts_settings
+        )
+        assert len(available) == len(chunks)
+        assert skipped == []
+
+        output_path = tmp_path / "combined_chunks.wav"
+        result = export_combined_wav(
+            segments, tts_settings, output_path
+        )
+        combined = AudioSegment.from_wav(output_path)
+        assert result["included"] == len(chunks)
+        assert abs(len(combined) - expected_duration) <= 5
+
+    def test_export_combined_wav_rejects_when_nothing_is_generated(
+        self, tmp_path
+    ):
+        import pytest
+        from aviutl_whisper.elevenlabs_tts import (
+            ElevenLabsTtsError,
+            export_combined_wav,
+        )
+
+        output_path = tmp_path / "empty.wav"
+        with pytest.raises(
+            ElevenLabsTtsError,
+            match="結合できる生成済みTTS音声がありません",
+        ):
+            export_combined_wav(
+                self._segments(), self._settings(tmp_path), output_path
+            )
+        assert not output_path.exists()
+
+    def test_api_saves_combined_tts_wav(self, tmp_path, monkeypatch):
+        from aviutl_whisper import elevenlabs_tts, settings
+        from aviutl_whisper.api import Api
+
+        monkeypatch.setattr(
+            settings, "_get_settings_path", lambda: tmp_path / "settings.json"
+        )
+        monkeypatch.setattr(
+            settings, "encrypt_token", lambda token: "encrypted"
+        )
+        monkeypatch.setattr(
+            elevenlabs_tts,
+            "get_combined_audio_items",
+            lambda segments, tts_settings: (
+                [{"kind": "segment", "index": 0, "audio_path": "one.wav"}],
+                [{"kind": "segment", "index": 1, "status": "not_generated"}],
+            ),
+        )
+
+        def fake_export(segments, tts_settings, output_path):
+            Path(output_path).write_bytes(b"RIFF")
+            return {
+                "path": str(output_path),
+                "included": 1,
+                "skipped": [
+                    {
+                        "kind": "segment",
+                        "index": 1,
+                        "status": "not_generated",
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(
+            elevenlabs_tts, "export_combined_wav", fake_export
+        )
+        api = Api()
+        api._last_segments = self._segments()
+        api.window = MockWindow()
+        api.window._save_dialog_result = str(tmp_path / "joined.wav")
+
+        result = api.save_combined_tts_wav(self._settings(tmp_path / "audio"))
+        assert result["success"] is True
+        assert result["included"] == 1
+        assert result["skipped"][0]["index"] == 1
+        assert (tmp_path / "joined.wav").read_bytes() == b"RIFF"

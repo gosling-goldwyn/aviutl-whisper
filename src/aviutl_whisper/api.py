@@ -3,12 +3,21 @@
 import json
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 
 import webview
 
-from . import audio, diarizer, exporter, models, settings, transcriber
+from . import (
+    audio,
+    diarizer,
+    elevenlabs_tts,
+    exporter,
+    models,
+    settings,
+    transcriber,
+)
 
 PROJECT_VERSION = 1
 
@@ -393,6 +402,8 @@ class Api:
         self._is_dirty: bool = False
         self._current_project_path: str | None = None
         self._skip_close_dialog: bool = False
+        self._tts_progress = {"progress": 0.0, "message": ""}
+        self._tts_cancelled = False
 
     def set_window(self, window: webview.Window):
         self.window = window
@@ -835,18 +846,393 @@ class Api:
         encrypted = data.get("hf_token_encrypted", "")
         if encrypted:
             data["hf_token_decrypted"] = settings.decrypt_token(encrypted)
+        tts_encrypted = data.get("elevenlabs_api_key_encrypted", "")
+        if tts_encrypted:
+            data["elevenlabs_api_key_decrypted"] = settings.decrypt_token(
+                tts_encrypted
+            )
         return data
 
     def save_settings(self, data: dict):
         """設定を保存する。HFトークンは暗号化して保存。"""
+        existing = settings.load_settings()
         # フロントエンドから渡されたhf_tokenを暗号化
         hf_token = data.pop("hf_token", "")
         if hf_token:
             data["hf_token_encrypted"] = settings.encrypt_token(hf_token)
         elif "hf_token_encrypted" not in data:
             data["hf_token_encrypted"] = ""
+        # 通常設定の自動保存で、独立したTTS設定を消さない。
+        for key in (
+            "elevenlabs_api_key_encrypted",
+            "elevenlabs_model_id",
+            "elevenlabs_output_format",
+            "elevenlabs_speaker_voice_ids",
+            "elevenlabs_output_dir",
+            "elevenlabs_voice_settings",
+            "elevenlabs_apply_language_text_normalization",
+            "elevenlabs_apply_text_normalization",
+            "elevenlabs_generation_mode",
+            "elevenlabs_chunk_settings",
+        ):
+            if key not in data and key in existing:
+                data[key] = existing[key]
         settings.save_settings(data)
         return {"success": True}
+
+    # --- ElevenLabs TTS（プロジェクト・Undo/Redoから独立） ---
+
+    def _tts_segments(self):
+        if not self._last_segments:
+            return []
+        return _apply_speaker_mapping(self._last_segments, self._speaker_mapping)
+
+    def _save_tts_settings(self, tts_settings: dict):
+        saved = settings.load_settings()
+        if "api_key" in tts_settings:
+            saved["elevenlabs_api_key_encrypted"] = settings.encrypt_token(
+                str(tts_settings.get("api_key") or "")
+            )
+        saved["elevenlabs_model_id"] = str(
+            tts_settings.get("model_id")
+            or elevenlabs_tts.DEFAULT_MODEL_ID
+        )
+        saved["elevenlabs_output_format"] = str(
+            tts_settings.get("output_format")
+            or elevenlabs_tts.DEFAULT_OUTPUT_FORMAT
+        )
+        voice_ids = tts_settings.get("speaker_voice_ids", {})
+        saved["elevenlabs_speaker_voice_ids"] = (
+            dict(voice_ids) if isinstance(voice_ids, dict) else {}
+        )
+        saved["elevenlabs_output_dir"] = str(
+            tts_settings.get("output_dir") or ""
+        )
+        saved["elevenlabs_voice_settings"] = (
+            elevenlabs_tts.normalize_voice_settings(tts_settings)
+        )
+        saved["elevenlabs_apply_language_text_normalization"] = False
+        saved["elevenlabs_apply_text_normalization"] = (
+            elevenlabs_tts.normalize_apply_text_normalization(
+                tts_settings.get("apply_text_normalization", "auto")
+            )
+        )
+        saved["elevenlabs_generation_mode"] = (
+            elevenlabs_tts.resolve_generation_mode(tts_settings)
+        )
+        saved["elevenlabs_chunk_settings"] = (
+            elevenlabs_tts.normalize_chunk_settings(tts_settings)
+        )
+        settings.save_settings(saved)
+
+    def save_tts_settings(self, tts_settings: dict):
+        """TTS設定だけを既存settings.jsonへマージして保存する。"""
+        self._save_tts_settings(tts_settings)
+        return {"success": True}
+
+    def _elevenlabs_api_key(self, api_key: str | None = None) -> str:
+        if api_key and api_key.strip():
+            return api_key.strip()
+        encrypted = settings.load_settings().get(
+            "elevenlabs_api_key_encrypted", ""
+        )
+        return settings.decrypt_token(encrypted) if encrypted else ""
+
+    def list_elevenlabs_voices(self, api_key: str | None = None):
+        """利用可能なElevenLabsボイスを返す。"""
+        try:
+            voices = elevenlabs_tts.list_voices(
+                self._elevenlabs_api_key(api_key)
+            )
+            return {"success": True, "voices": voices}
+        except Exception as exc:
+            logger.warning("ElevenLabsボイス一覧取得エラー: %s", exc)
+            return {"success": False, "error": str(exc)}
+
+    def list_elevenlabs_models(self, api_key: str | None = None):
+        """TTS対応ElevenLabsモデルを返す。"""
+        try:
+            models_list = elevenlabs_tts.list_models(
+                self._elevenlabs_api_key(api_key)
+            )
+            return {"success": True, "models": models_list}
+        except Exception as exc:
+            logger.warning("ElevenLabsモデル一覧取得エラー: %s", exc)
+            return {"success": False, "error": str(exc)}
+
+    def select_tts_output_dir(self):
+        """TTS音声の出力先フォルダを選択する。"""
+        result = self.window.create_file_dialog(webview.FileDialog.FOLDER)
+        if not result:
+            return None
+        return result if isinstance(result, str) else result[0]
+
+    def save_tts_script(self, format_type: str, tts_settings: dict):
+        """現在のセグメントをTTS用TXT/CSV台本として保存する。"""
+        segments = self._tts_segments()
+        if not segments:
+            return {"success": False, "error": "保存するセグメントがありません"}
+        fmt = str(format_type).lower()
+        if fmt not in ("txt", "csv"):
+            return {"success": False, "error": "未対応の台本形式です"}
+        self._save_tts_settings(tts_settings)
+        result = self.window.create_file_dialog(
+            webview.FileDialog.SAVE,
+            file_types=(
+                "テキストファイル (*.txt)"
+                if fmt == "txt"
+                else "CSVファイル (*.csv)",
+            ),
+            save_filename=f"tts_script.{fmt}",
+        )
+        if not result:
+            return {"success": False, "error": "キャンセルされました"}
+        path = Path(result if isinstance(result, str) else result[0])
+        try:
+            if fmt == "txt":
+                content = elevenlabs_tts.export_script_txt(segments)
+                path.write_text(content, encoding="utf-8")
+            else:
+                content = elevenlabs_tts.export_script_csv(
+                    segments, tts_settings
+                )
+                path.write_text(content, encoding="utf-8-sig", newline="")
+            return {"success": True, "path": str(path)}
+        except Exception as exc:
+            logger.exception("TTS台本保存エラー")
+            return {"success": False, "error": str(exc)}
+
+    def save_combined_tts_wav(self, tts_settings: dict):
+        """生成済みTTS音声を現在順で結合し、WAVとして保存する。"""
+        segments = self._tts_segments()
+        if not segments:
+            return {"success": False, "error": "保存するセグメントがありません"}
+        self._save_tts_settings(tts_settings)
+        available, skipped = elevenlabs_tts.get_combined_audio_items(
+            segments, tts_settings
+        )
+        if not available:
+            return {
+                "success": False,
+                "error": "結合できる生成済みTTS音声がありません",
+                "skipped": skipped,
+            }
+        result = self.window.create_file_dialog(
+            webview.FileDialog.SAVE,
+            file_types=("WAVファイル (*.wav)",),
+            save_filename="tts_combined.wav",
+        )
+        if not result:
+            return {"success": False, "error": "キャンセルされました"}
+        path = Path(result if isinstance(result, str) else result[0])
+        if path.suffix.lower() != ".wav":
+            path = path.with_suffix(".wav")
+        self._tts_progress = {
+            "progress": 0.0,
+            "message": "生成済みTTS音声を結合中...",
+        }
+        try:
+            exported = elevenlabs_tts.export_combined_wav(
+                segments, tts_settings, path
+            )
+            self._tts_progress = {
+                "progress": 1.0,
+                "message": "結合WAVを保存しました",
+            }
+            return {"success": True, **exported}
+        except Exception as exc:
+            logger.warning("TTS結合WAV保存エラー: %s", exc)
+            self._tts_progress = {"progress": -1.0, "message": str(exc)}
+            return {"success": False, "error": str(exc)}
+
+    def generate_tts_for_segment(
+        self, index: int, tts_settings: dict, force: bool = True
+    ):
+        """指定セグメントのTTSを生成する。"""
+        segments = self._tts_segments()
+        if not segments:
+            return {"success": False, "error": "生成するセグメントがありません"}
+        self._save_tts_settings(tts_settings)
+        self._tts_cancelled = False
+        self._tts_progress = {
+            "progress": 0.0,
+            "message": f"セグメント {index + 1} を生成中...",
+        }
+        try:
+            mode = elevenlabs_tts.resolve_generation_mode(tts_settings)
+            if mode == elevenlabs_tts.CHUNK_V3:
+                chunks = elevenlabs_tts.build_chunks(
+                    segments, tts_settings
+                )
+                owning_chunk = next(
+                    (
+                        chunk for chunk in chunks
+                        if index in chunk["segment_indices"]
+                    ),
+                    None,
+                )
+                if owning_chunk is None:
+                    raise elevenlabs_tts.ElevenLabsTtsError(
+                        "対象チャンクが見つかりません"
+                    )
+                self._tts_progress["message"] = (
+                    f"チャンク {owning_chunk['chunk_index'] + 1} を生成中..."
+                )
+                generated = elevenlabs_tts.generate_chunk(
+                    segments,
+                    owning_chunk["chunk_index"],
+                    tts_settings,
+                    force=force,
+                )
+            else:
+                generated = elevenlabs_tts.generate_segment(
+                    segments, index, tts_settings, force=force
+                )
+            self._tts_progress = {"progress": 1.0, "message": "完了"}
+            return {"success": True, **generated}
+        except Exception as exc:
+            logger.warning("TTSセグメント生成エラー: %s", exc)
+            self._tts_progress = {"progress": -1.0, "message": str(exc)}
+            return {"success": False, "error": str(exc)}
+
+    def generate_tts_for_all(self, tts_settings: dict, force: bool = False):
+        """全セグメントを順番に生成し、個別エラー後も続行する。"""
+        segments = self._tts_segments()
+        if not segments:
+            return {"success": False, "error": "生成するセグメントがありません"}
+        voice_ids = tts_settings.get("speaker_voice_ids", {})
+        speakers = sorted({seg.speaker or "Speaker 1" for seg in segments})
+        missing = [speaker for speaker in speakers if not voice_ids.get(speaker)]
+        if missing:
+            return {
+                "success": False,
+                "error": "voice_id未設定: " + ", ".join(missing),
+            }
+        self._save_tts_settings(tts_settings)
+        self._tts_cancelled = False
+        counts = {"generated": 0, "skipped": 0, "errors": 0}
+        errors = []
+        mode = elevenlabs_tts.resolve_generation_mode(tts_settings)
+        chunks = (
+            elevenlabs_tts.build_chunks(segments, tts_settings)
+            if mode == elevenlabs_tts.CHUNK_V3
+            else []
+        )
+        total = len(chunks) if chunks else len(segments)
+        for index in range(total):
+            if self._tts_cancelled:
+                self._tts_progress = {
+                    "progress": index / total,
+                    "message": "TTS生成を中止しました",
+                }
+                return {
+                    "success": False,
+                    "cancelled": True,
+                    **counts,
+                    "errors_detail": errors,
+                }
+            self._tts_progress = {
+                "progress": index / total,
+                "message": (
+                    f"チャンク {index + 1} / {total} を生成中..."
+                    if mode == elevenlabs_tts.CHUNK_V3
+                    else f"{index + 1} / {total} を生成中..."
+                ),
+            }
+            try:
+                if mode == elevenlabs_tts.CHUNK_V3:
+                    result = elevenlabs_tts.generate_chunk(
+                        segments, index, tts_settings, force=force
+                    )
+                else:
+                    result = elevenlabs_tts.generate_segment(
+                        segments, index, tts_settings, force=force
+                    )
+                counts[result["status"]] += 1
+            except Exception as exc:
+                logger.warning("TTS一括生成の個別エラー index=%d: %s", index, exc)
+                counts["errors"] += 1
+                errors.append({"index": index, "error": str(exc)})
+        self._tts_progress = {
+            "progress": 1.0,
+            "message": (
+                f"完了: 生成 {counts['generated']} / "
+                f"スキップ {counts['skipped']} / エラー {counts['errors']}"
+            ),
+        }
+        return {
+            "success": counts["errors"] == 0,
+            **counts,
+            "errors_detail": errors,
+        }
+
+    def get_tts_status(self, tts_settings: dict):
+        """manifestと現在のセグメントからTTS状態を返す。"""
+        segments = self._tts_segments()
+        if not segments:
+            return {"success": False, "error": "セグメントがありません"}
+        try:
+            statuses = elevenlabs_tts.get_segment_statuses(
+                segments, tts_settings
+            )
+            return {
+                "success": True,
+                "segments": statuses,
+                "speakers": sorted({item["speaker"] for item in statuses}),
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def get_tts_progress(self):
+        return dict(self._tts_progress)
+
+    def cancel_tts(self):
+        self._tts_cancelled = True
+        return {"success": True}
+
+    def play_tts_segment(self, index: int, tts_settings: dict):
+        """生成済みTTS音声を再生する。元音声再生には影響しない。"""
+        segments = self._tts_segments()
+        if not segments:
+            return {"success": False, "error": "セグメントがありません"}
+        try:
+            statuses = elevenlabs_tts.get_segment_statuses(
+                segments, tts_settings
+            )
+            if index < 0 or index >= len(statuses):
+                return {"success": False, "error": "無効なインデックス"}
+            path = statuses[index].get("audio_path", "")
+            if not path or not os.path.exists(path):
+                return {"success": False, "error": "TTS音声が生成されていません"}
+            import sounddevice as sd
+            import soundfile as sf
+
+            temp_path = None
+            try:
+                if Path(path).suffix.lower() == ".wav":
+                    wav_path = path
+                else:
+                    from pydub import AudioSegment
+
+                    fd, temp_path = tempfile.mkstemp(suffix=".wav")
+                    os.close(fd)
+                    AudioSegment.from_file(path).export(
+                        temp_path, format="wav"
+                    )
+                    wav_path = temp_path
+                data, sample_rate = sf.read(wav_path)
+            finally:
+                if temp_path:
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
+            sd.stop()
+            sd.play(data, sample_rate)
+            return {"success": True}
+        except Exception as exc:
+            logger.warning("TTS音声再生エラー: %s", exc)
+            return {"success": False, "error": str(exc)}
 
     # --- プロジェクト保存・読み込み ---
 
