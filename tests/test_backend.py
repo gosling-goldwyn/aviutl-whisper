@@ -4,6 +4,7 @@
 音声ファイルを使うテストはダミーWAVを生成して実行する。
 """
 
+import json
 import os
 import struct
 import tempfile
@@ -3299,3 +3300,82 @@ class TestElevenLabsTts:
         assert result["included"] == 1
         assert result["skipped"][0]["index"] == 1
         assert (tmp_path / "joined.wav").read_bytes() == b"RIFF"
+
+
+class TestSettingsImportExportApi:
+    """アプリ設定ファイルのインポート/エクスポートAPIのテスト。"""
+
+    class FakeWindow:
+        def __init__(self, path):
+            self.path = path
+
+        def create_file_dialog(self, *args, **kwargs):
+            return [str(self.path)]
+
+    def test_export_settings_writes_encrypted_values_without_plaintext(self, monkeypatch, tmp_path):
+        from aviutl_whisper import settings
+        from aviutl_whisper.api import Api
+
+        settings_path = tmp_path / "settings.json"
+        export_path = tmp_path / "exported-settings.json"
+        monkeypatch.setattr(settings, "_get_settings_path", lambda: settings_path)
+        settings.save_settings({
+            "model_size": "large-v3",
+            "hf_token_encrypted": "hf-enc",
+            "elevenlabs_api_key_encrypted": "tts-enc",
+            "exo": {
+                "font": "Arial",
+                "speaker_images": [{"file": "C:/img/a.png", "x": 1, "y": 2, "scale": 120}],
+                "background_image": "C:/bg/bg.png",
+            },
+        })
+
+        api = Api(self.FakeWindow(export_path))
+        result = api.export_settings()
+
+        assert result["success"] is True
+        payload = json.loads(export_path.read_text(encoding="utf-8"))
+        assert payload["app"] == "aviutl-whisper"
+        assert payload["settings"]["hf_token_encrypted"] == "hf-enc"
+        assert payload["settings"]["elevenlabs_api_key_encrypted"] == "tts-enc"
+        assert "hf_token" not in payload["settings"]
+        assert "hf_token_decrypted" not in payload["settings"]
+        assert "elevenlabs_api_key_decrypted" not in payload["settings"]
+        assert payload["settings"]["exo"]["background_image"] == "C:/bg/bg.png"
+
+    def test_import_settings_merges_partial_file(self, monkeypatch, tmp_path):
+        from aviutl_whisper import settings
+        from aviutl_whisper.api import Api
+
+        settings_path = tmp_path / "settings.json"
+        import_path = tmp_path / "import-settings.json"
+        monkeypatch.setattr(settings, "_get_settings_path", lambda: settings_path)
+        monkeypatch.setattr(settings, "decrypt_token", lambda value: f"decoded:{value}")
+        settings.save_settings({
+            "model_size": "medium",
+            "language": "ja",
+            "hf_token_encrypted": "old-hf-enc",
+            "exo": {"font": "Arial", "font_size": 34, "bold": True},
+        })
+        import_path.write_text(json.dumps({
+            "app": "aviutl-whisper",
+            "version": 1,
+            "settings": {
+                "language": "en",
+                "hf_token_decrypted": "should-not-be-imported",
+                "exo": {"font_size": 60},
+            },
+        }), encoding="utf-8")
+
+        api = Api(self.FakeWindow(import_path))
+        result = api.import_settings()
+
+        assert result["success"] is True
+        loaded = settings.load_settings()
+        assert loaded["model_size"] == "medium"
+        assert loaded["language"] == "en"
+        assert loaded["hf_token_encrypted"] == "old-hf-enc"
+        assert loaded["exo"]["font"] == "Arial"
+        assert loaded["exo"]["font_size"] == 60
+        assert loaded["exo"]["bold"] is True
+        assert result["settings"]["hf_token_decrypted"] == "decoded:old-hf-enc"
