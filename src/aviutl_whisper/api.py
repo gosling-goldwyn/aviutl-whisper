@@ -880,6 +880,66 @@ class Api:
         settings.save_settings(data)
         return {"success": True}
 
+    def export_settings(self):
+        """アプリ設定をJSONファイルに書き出す。復号済みの秘密情報は含めない。"""
+        result = self.window.create_file_dialog(
+            webview.FileDialog.SAVE,
+            file_types=("設定ファイル (*.json)",),
+            save_filename="aviutl-whisper-settings.json",
+        )
+        if not result:
+            return {"success": False, "error": "キャンセルされました"}
+
+        path = result[0] if isinstance(result, (list, tuple)) else result
+        try:
+            payload = {
+                "app": "aviutl-whisper",
+                "version": PROJECT_VERSION,
+                "settings": settings.load_settings(),
+            }
+            Path(path).write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return {"success": True, "path": str(path)}
+        except Exception as e:
+            logger.exception("設定書き出しエラー")
+            return {"success": False, "error": str(e)}
+
+    def import_settings(self):
+        """JSONファイルからアプリ設定を読み込み、既存設定へマージして保存する。"""
+        result = self.window.create_file_dialog(
+            webview.FileDialog.OPEN,
+            file_types=("設定ファイル (*.json)",),
+        )
+        if not result:
+            return {"success": False, "error": "キャンセルされました"}
+
+        path = result[0] if isinstance(result, (list, tuple)) else result
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            imported = None
+            if isinstance(payload, dict) and isinstance(payload.get("settings"), dict):
+                imported = payload["settings"]
+            elif isinstance(payload, dict) and any(
+                key in settings.DEFAULT_SETTINGS for key in payload
+            ):
+                imported = payload
+            if not isinstance(imported, dict):
+                return {"success": False, "error": "設定ファイルの形式が不正です"}
+
+            imported.pop("hf_token", None)
+            imported.pop("hf_token_decrypted", None)
+            imported.pop("elevenlabs_api_key_decrypted", None)
+
+            merged = settings._deep_merge(settings.load_settings(), imported)
+            settings.save_settings(merged)
+            return {"success": True, "settings": self.load_settings(), "path": str(path)}
+        except json.JSONDecodeError:
+            return {"success": False, "error": "JSONの読み込みに失敗しました"}
+        except Exception as e:
+            logger.exception("設定読み込みエラー")
+            return {"success": False, "error": str(e)}
     # --- ElevenLabs TTS（プロジェクト・Undo/Redoから独立） ---
 
     def _tts_segments(self):

@@ -160,6 +160,8 @@ function initEventListeners() {
     $("#menu-open-project").addEventListener("click", () => { fileEntry.classList.remove("open"); loadProjectWithCheck(); });
     $("#menu-save-project").addEventListener("click", () => { fileEntry.classList.remove("open"); saveProject(); });
     $("#menu-save-project-as").addEventListener("click", () => { fileEntry.classList.remove("open"); saveProjectAs(); });
+    $("#menu-import-settings").addEventListener("click", () => { fileEntry.classList.remove("open"); importSettings(); });
+    $("#menu-export-settings").addEventListener("click", () => { fileEntry.classList.remove("open"); exportSettings(); });
 
     const editEntry = $("#menu-edit-entry");
     editEntry.querySelector(".menu-entry-btn").addEventListener("click", (e) => {
@@ -1146,96 +1148,97 @@ async function loadDeviceInfo() {
 }
 
 // --- 設定の保存/読み込み ---
+function applySettingsToUi(saved) {
+    if (!saved) return;
+
+    if (saved.model_size) $("#model-size").value = saved.model_size;
+    if (saved.language) $("#language").value = saved.language;
+    if (saved.num_speakers) $("#num-speakers").value = saved.num_speakers;
+    if (saved.diarization_method) $("#diarization-method").value = saved.diarization_method;
+    $("#hf-token").value = saved.hf_token_decrypted || "";
+    $("#tts-api-key").value = saved.elevenlabs_api_key_decrypted || "";
+
+    renderTtsModelOptions(
+        [],
+        saved.elevenlabs_model_id || "eleven_multilingual_v2"
+    );
+    $("#tts-output-format").value = saved.elevenlabs_output_format || "mp3_44100_128";
+    $("#tts-output-dir").value = saved.elevenlabs_output_dir || "";
+    savedTtsVoiceIds = saved.elevenlabs_speaker_voice_ids || {};
+
+    const voiceSettings = saved.elevenlabs_voice_settings || {};
+    $("#tts-stability").value = voiceSettings.stability ?? 0.5;
+    $("#tts-similarity-boost").value = voiceSettings.similarity_boost ?? 0.75;
+    $("#tts-style").value = voiceSettings.style ?? 0;
+    $("#tts-speed").value = voiceSettings.speed ?? 1;
+    $("#tts-use-speaker-boost").checked = voiceSettings.use_speaker_boost !== false;
+
+    const chunkSettings = saved.elevenlabs_chunk_settings || {};
+    $("#tts-max-chars-per-chunk").value = chunkSettings.max_chars_per_chunk ?? 1200;
+    $("#tts-max-segments-per-chunk").value = chunkSettings.max_segments_per_chunk ?? 8;
+    $("#tts-split-on-speaker-change").checked = chunkSettings.split_on_speaker_change === true;
+    syncTtsGenerationMode();
+
+    const exo = saved.exo;
+    if (exo) {
+        if (exo.font) $("#exo-font").value = exo.font;
+        if (exo.font_size != null) $("#exo-font-size").value = exo.font_size;
+        if (exo.spacing_x != null) $("#exo-spacing-x").value = exo.spacing_x;
+        if (exo.spacing_y != null) $("#exo-spacing-y").value = exo.spacing_y;
+        if (exo.display_speed != null) $("#exo-display-speed").value = exo.display_speed;
+        if (exo.align != null) $("#exo-align").value = exo.align;
+        if (exo.pos_x != null) $("#exo-pos-x").value = exo.pos_x;
+        if (exo.pos_y != null) $("#exo-pos-y").value = exo.pos_y;
+        if (exo.max_chars_per_line != null) $("#exo-max-chars").value = exo.max_chars_per_line;
+        $("#exo-bold").checked = !!exo.bold;
+        $("#exo-italic").checked = !!exo.italic;
+        $("#exo-soft-edge").checked = exo.soft_edge !== false;
+
+        if (exo.speaker_colors) {
+            exoDefaults = exoDefaults || {};
+            exoDefaults.speaker_colors = exo.speaker_colors;
+        }
+        if (exo.speaker_edge_colors) {
+            exoDefaults = exoDefaults || {};
+            exoDefaults.speaker_edge_colors = exo.speaker_edge_colors;
+        }
+    }
+
+    updateHfTokenVisibility();
+    renderSpeakerColors();
+
+    if (exo?.speaker_images?.length > 0) {
+        tachieData = exo.speaker_images.map(img => ({
+            file: img.file || "",
+            x: img.x || 0,
+            y: img.y || 0,
+            scale: img.scale || 100,
+        }));
+    } else {
+        tachieData = [];
+    }
+    renderSpeakerTachie();
+
+    backgroundImage = exo?.background_image || "";
+    $("#bg-image-name").textContent = backgroundImage
+        ? backgroundImage.split(/[\\/]/).pop()
+        : "未選択";
+
+    if (exo?.speaker_edge_colors?.length > 0) {
+        document.querySelectorAll(".speaker-edge-hex").forEach((el, i) => {
+            if (i < exo.speaker_edge_colors.length) {
+                el.value = exo.speaker_edge_colors[i];
+                const picker = document.querySelector(`.speaker-edge-color[data-index="${i}"]`);
+                if (picker) picker.value = "#" + exo.speaker_edge_colors[i];
+            }
+        });
+    }
+}
+
 async function loadSavedSettings() {
     try {
         const saved = await pywebview.api.load_settings();
-        if (!saved) return;
-
-        if (saved.model_size) $("#model-size").value = saved.model_size;
-        if (saved.language) $("#language").value = saved.language;
-        if (saved.num_speakers) $("#num-speakers").value = saved.num_speakers;
-        if (saved.diarization_method) $("#diarization-method").value = saved.diarization_method;
-        if (saved.hf_token_decrypted) $("#hf-token").value = saved.hf_token_decrypted;
-        if (saved.elevenlabs_api_key_decrypted) {
-            $("#tts-api-key").value = saved.elevenlabs_api_key_decrypted;
-        }
-        renderTtsModelOptions(
-            [],
-            saved.elevenlabs_model_id || "eleven_multilingual_v2"
-        );
-        $("#tts-output-format").value = saved.elevenlabs_output_format || "mp3_44100_128";
-        $("#tts-output-dir").value = saved.elevenlabs_output_dir || "";
-        savedTtsVoiceIds = saved.elevenlabs_speaker_voice_ids || {};
-        const voiceSettings = saved.elevenlabs_voice_settings || {};
-        $("#tts-stability").value = voiceSettings.stability ?? 0.5;
-        $("#tts-similarity-boost").value = voiceSettings.similarity_boost ?? 0.75;
-        $("#tts-style").value = voiceSettings.style ?? 0;
-        $("#tts-speed").value = voiceSettings.speed ?? 1;
-        $("#tts-use-speaker-boost").checked =
-            voiceSettings.use_speaker_boost !== false;
-        const chunkSettings = saved.elevenlabs_chunk_settings || {};
-        $("#tts-max-chars-per-chunk").value =
-            chunkSettings.max_chars_per_chunk ?? 1200;
-        $("#tts-max-segments-per-chunk").value =
-            chunkSettings.max_segments_per_chunk ?? 8;
-        $("#tts-split-on-speaker-change").checked =
-            chunkSettings.split_on_speaker_change === true;
-        syncTtsGenerationMode();
-
-        const exo = saved.exo;
-        if (exo) {
-            if (exo.font) $("#exo-font").value = exo.font;
-            if (exo.font_size != null) $("#exo-font-size").value = exo.font_size;
-            if (exo.spacing_x != null) $("#exo-spacing-x").value = exo.spacing_x;
-            if (exo.spacing_y != null) $("#exo-spacing-y").value = exo.spacing_y;
-            if (exo.display_speed != null) $("#exo-display-speed").value = exo.display_speed;
-            if (exo.align != null) $("#exo-align").value = exo.align;
-            if (exo.pos_x != null) $("#exo-pos-x").value = exo.pos_x;
-            if (exo.pos_y != null) $("#exo-pos-y").value = exo.pos_y;
-            if (exo.max_chars_per_line != null) $("#exo-max-chars").value = exo.max_chars_per_line;
-            $("#exo-bold").checked = !!exo.bold;
-            $("#exo-italic").checked = !!exo.italic;
-            $("#exo-soft-edge").checked = exo.soft_edge !== false;
-
-            if (exo.speaker_colors) {
-                exoDefaults = exoDefaults || {};
-                exoDefaults.speaker_colors = exo.speaker_colors;
-            }
-            if (exo.speaker_edge_colors && exo.speaker_edge_colors.length > 0) {
-                exoDefaults = exoDefaults || {};
-                exoDefaults.speaker_edge_colors = exo.speaker_edge_colors;
-            }
-        }
-
-        updateHfTokenVisibility();
-        renderSpeakerColors();
-
-        if (exo?.speaker_images?.length > 0) {
-            tachieData = exo.speaker_images.map(img => ({
-                file: img.file || "",
-                x: img.x || 0,
-                y: img.y || 0,
-                scale: img.scale || 100,
-            }));
-        }
-        renderSpeakerTachie();
-
-        if (exo?.background_image) {
-            backgroundImage = exo.background_image;
-            const name = backgroundImage.split(/[\\/]/).pop();
-            $("#bg-image-name").textContent = name;
-        }
-
-        if (exo?.speaker_edge_colors?.length > 0) {
-            document.querySelectorAll(".speaker-edge-hex").forEach((el, i) => {
-                if (i < exo.speaker_edge_colors.length) {
-                    el.value = exo.speaker_edge_colors[i];
-                    const picker = document.querySelector(`.speaker-edge-color[data-index="${i}"]`);
-                    if (picker) picker.value = "#" + exo.speaker_edge_colors[i];
-                }
-            });
-        }
-
+        applySettingsToUi(saved);
         setupAutoSave();
     } catch (e) {
         console.error("設定読み込みエラー:", e);
@@ -1243,6 +1246,32 @@ async function loadSavedSettings() {
     }
 }
 
+async function importSettings() {
+    try {
+        const result = await pywebview.api.import_settings();
+        if (!result?.success) {
+            if (result?.error && result.error !== "キャンセルされました") alert(result.error);
+            return;
+        }
+        applySettingsToUi(result.settings);
+        schedulePreviewRedraw();
+    } catch (e) {
+        console.error("設定インポートエラー:", e);
+        alert("設定の読み込みに失敗しました");
+    }
+}
+
+async function exportSettings() {
+    try {
+        const result = await pywebview.api.export_settings();
+        if (!result?.success && result?.error && result.error !== "キャンセルされました") {
+            alert(result.error);
+        }
+    } catch (e) {
+        console.error("設定エクスポートエラー:", e);
+        alert("設定の書き出しに失敗しました");
+    }
+}
 function collectAllSettings() {
     return {
         model_size: $("#model-size").value,
