@@ -63,6 +63,7 @@ def reset_app_state(page: Page) -> None:
     """
     page.evaluate("""
         document.getElementById('transcription-modal').classList.add('hidden');
+        document.getElementById('text-input-modal').classList.add('hidden');
         document.getElementById('tts-modal').classList.add('hidden');
         document.getElementById('save-confirm-modal').classList.add('hidden');
         document.querySelectorAll('.menu-entry').forEach(e => e.classList.remove('open'));
@@ -81,6 +82,9 @@ def reset_app_state(page: Page) -> None:
         document.getElementById('btn-next-seg').disabled = true;
         document.getElementById('btn-start').disabled = true;
         document.getElementById('file-name').textContent = '未選択';
+        document.getElementById('file-info').classList.add('hidden');
+        document.getElementById('text-input-content').value = '';
+        document.getElementById('text-ms-per-char').value = '100';
         document.getElementById('file-info').classList.add('hidden');
         document.getElementById('progress-area').classList.add('hidden');
         document.getElementById('btn-save').disabled = true;

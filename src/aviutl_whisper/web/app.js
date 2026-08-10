@@ -85,6 +85,10 @@ window.addEventListener("pywebviewready", async () => {
 
 function initEventListeners() {
     $("#btn-select-file").addEventListener("click", selectFile);
+    $("#btn-open-text-input").addEventListener("click", openTextInputModal);
+    $("#btn-close-text-input").addEventListener("click", closeTextInputModal);
+    $("#btn-cancel-text-input").addEventListener("click", closeTextInputModal);
+    $("#btn-create-from-text").addEventListener("click", createFromText);
     $("#btn-open-settings").addEventListener("click", openTranscriptionModal);
     $("#btn-close-modal").addEventListener("click", closeTranscriptionModal);
     $("#btn-modal-ok").addEventListener("click", closeTranscriptionModal);
@@ -143,6 +147,9 @@ function initEventListeners() {
     // モーダル背景クリックで閉じる
     $("#transcription-modal").addEventListener("click", (e) => {
         if (e.target === $("#transcription-modal")) closeTranscriptionModal();
+    });
+    $("#text-input-modal").addEventListener("click", (e) => {
+        if (e.target === $("#text-input-modal")) closeTextInputModal();
     });
     $("#tts-modal").addEventListener("click", (e) => {
         if (e.target === $("#tts-modal")) closeTtsModal();
@@ -447,6 +454,15 @@ function closeTranscriptionModal() {
     scheduleAutoSave();
 }
 
+function openTextInputModal() {
+    show($("#text-input-modal"));
+    $("#text-input-content").focus();
+}
+
+function closeTextInputModal() {
+    hide($("#text-input-modal"));
+}
+
 // --- HFトークン欄の表示/非表示 ---
 function updateHfTokenVisibility() {
     const tokenItem = $("#hf-token-item");
@@ -709,6 +725,46 @@ async function selectFile() {
     }
 }
 
+async function createFromText() {
+    const text = $("#text-input-content").value;
+    const msPerChar = Number($("#text-ms-per-char").value);
+    if (!text.trim()) {
+        alert("テキストを入力してください");
+        return;
+    }
+    if (!Number.isInteger(msPerChar) || msPerChar <= 0) {
+        alert("1文字あたりの時間は正の整数で指定してください");
+        return;
+    }
+
+    const createButton = $("#btn-create-from-text");
+    createButton.disabled = true;
+    try {
+        const result = await pywebview.api.import_text(
+            text,
+            msPerChar,
+            { exo_settings: collectExoSettings() }
+        );
+        if (!result || !result.success) {
+            alert("エラー: " + (result?.error || "テキストの取り込みに失敗しました"));
+            return;
+        }
+
+        selectedFile = null;
+        $("#file-name").textContent = "テキスト入力（無音）";
+        $("#file-info").textContent = `1文字: ${msPerChar}ms | 音声: 無音`;
+        show($("#file-info"));
+        $("#btn-start").disabled = true;
+        $("#text-input-content").value = "";
+        closeTextInputModal();
+        showResult(result);
+    } catch (e) {
+        alert("テキスト取り込み中にエラーが発生しました: " + e);
+    } finally {
+        createButton.disabled = false;
+    }
+}
+
 // --- 文字起こし実行 ---
 async function startTranscription() {
     if (!selectedFile || isProcessing) return;
@@ -776,10 +832,11 @@ async function cancelTranscription() {
 // --- 結果表示 ---
 function showResult(result) {
     const stats = $("#result-stats");
+    const sourceStat = result.input_type === "text" ? "📝 テキスト入力" : `🌐 ${result.language}`;
     stats.innerHTML = `
         <span>🎯 ${result.num_segments}セグメント</span>
         <span>🗣️ ${result.num_speakers}人</span>
-        <span>🌐 ${result.language}</span>
+        <span>${sourceStat}</span>
     `;
 
     setProgress(100, "完了！");
@@ -909,11 +966,17 @@ async function loadProject() {
 
         // ファイル情報を復元
         selectedFile = result.source_file || null;
-        if (selectedFile) {
+        if (result.audio_mode === "silence") {
+            $("#file-name").textContent = "テキスト入力（無音）";
+            $("#file-info").textContent = "入力: テキスト | 音声: 無音";
+            show($("#file-info"));
+        } else if (selectedFile) {
             const name = selectedFile.split(/[\/]/).pop();
             $("#file-name").textContent = name;
+            hide($("#file-info"));
         } else {
             $("#file-name").textContent = "未選択";
+            hide($("#file-info"));
         }
 
         // exo設定をUIに反映
@@ -924,10 +987,11 @@ async function loadProject() {
 
         // 結果表示
         const stats = $("#result-stats");
+        const sourceStat = result.audio_mode === "silence" ? "📝 テキスト入力" : `🌐 ${result.language || "?"}`;
         stats.innerHTML = `
             <span>🎯 ${result.num_segments}セグメント</span>
             <span>🗣️ ${result.num_speakers}人</span>
-            <span>🌐 ${result.language || "?"}</span>
+            <span>${sourceStat}</span>
         `;
 
         // ボタン有効化
@@ -1164,6 +1228,7 @@ function applySettingsToUi(saved) {
     );
     $("#tts-output-format").value = saved.elevenlabs_output_format || "mp3_44100_128";
     $("#tts-output-dir").value = saved.elevenlabs_output_dir || "";
+    $("#tts-combined-wav-silence").value = saved.elevenlabs_combined_wav_silence_ms ?? 0;
     savedTtsVoiceIds = saved.elevenlabs_speaker_voice_ids || {};
 
     const voiceSettings = saved.elevenlabs_voice_settings || {};
@@ -1406,9 +1471,19 @@ function formatTime(seconds) {
 }
 
 function formatTimeDetailed(seconds) {
-    const m = Math.floor(seconds / 60);
-    const s = (seconds % 60).toFixed(1);
-    return `${String(m).padStart(2, "0")}:${s.padStart(4, "0")}`;
+    const totalMs = Math.round(seconds * 1000);
+    const m = Math.floor(totalMs / 60000);
+    const s = Math.floor(totalMs / 1000) % 60;
+    const ms = totalMs % 1000;
+    const fraction = ms % 100 === 0
+        ? String(Math.floor(ms / 100))
+        : String(ms).padStart(3, "0");
+    return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${fraction}`;
+}
+
+function formatTimeInputValue(seconds) {
+    const milliseconds = Math.round(seconds * 1000);
+    return milliseconds % 10 === 0 ? seconds.toFixed(2) : seconds.toFixed(3);
 }
 
 function getSpeakerIndex(speakerName) {
@@ -1510,8 +1585,8 @@ function populateSegmentEditor() {
         select.appendChild(opt);
     }
 
-    $("#seg-edit-start").value = seg.start.toFixed(2);
-    $("#seg-edit-end").value = seg.end.toFixed(2);
+    $("#seg-edit-start").value = formatTimeInputValue(seg.start);
+    $("#seg-edit-end").value = formatTimeInputValue(seg.end);
     $("#seg-edit-text").value = seg.text;
 
     const curSpeaker = seg.speaker || "Speaker 1";
@@ -1773,6 +1848,7 @@ function collectTtsSettings() {
         api_key: $("#tts-api-key").value.trim(),
         model_id: $("#tts-model-id").value.trim() || "eleven_multilingual_v2",
         output_format: $("#tts-output-format").value.trim() || "mp3_44100_128",
+        combined_wav_silence_ms: Number($("#tts-combined-wav-silence").value),
         speaker_voice_ids: voiceIds,
         output_dir: $("#tts-output-dir").value.trim(),
         voice_settings: {

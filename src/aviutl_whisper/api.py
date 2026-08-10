@@ -2,7 +2,9 @@
 
 import json
 import logging
+import math
 import os
+import re
 import tempfile
 import threading
 from pathlib import Path
@@ -22,6 +24,56 @@ from . import (
 PROJECT_VERSION = 1
 
 logger = logging.getLogger(__name__)
+
+_SPEAKER_PREFIX_RE = re.compile(
+    r"^\[\s*speaker\s*(?!0+\s*\])(\d+)\s*\]\s*(?:[:：]\s*)?",
+    re.IGNORECASE,
+)
+
+
+def segments_from_text(
+    text: str,
+    ms_per_char: int = 100,
+) -> list[transcriber.TranscriptionSegment]:
+    """改行区切りテキストを話者prefix対応の連続セグメントへ変換する。"""
+    if isinstance(ms_per_char, bool) or not isinstance(ms_per_char, (int, float)):
+        raise ValueError("1文字あたりの時間は正の整数で指定してください")
+    if (
+        not math.isfinite(ms_per_char)
+        or ms_per_char <= 0
+        or not float(ms_per_char).is_integer()
+    ):
+        raise ValueError("1文字あたりの時間は正の整数で指定してください")
+
+    char_ms = int(ms_per_char)
+    current_ms = 0
+    current_speaker = "Speaker 1"
+    segments = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        prefix_match = _SPEAKER_PREFIX_RE.match(line)
+        if prefix_match:
+            current_speaker = f"Speaker {int(prefix_match.group(1))}"
+            line = line[prefix_match.end():].strip()
+        if not line:
+            continue
+
+        end_ms = current_ms + len(line) * char_ms
+        segments.append(
+            transcriber.TranscriptionSegment(
+                start=current_ms / 1000.0,
+                end=end_ms / 1000.0,
+                text=line,
+                speaker=current_speaker,
+            )
+        )
+        current_ms = end_ms
+    if not segments:
+        raise ValueError("有効なテキスト行がありません")
+    return segments
 
 
 def _get_system_fonts() -> list[str]:
@@ -395,6 +447,8 @@ class Api:
         self._last_result: transcriber.TranscriptionResult | None = None
         self._last_segments: list[transcriber.TranscriptionSegment] | None = None
         self._last_wav_path: str | None = None
+        self._audio_mode: str = "none"
+        self._silent_wav_duration_ms: int = 0
         self._last_output_format: str = "exo"
         self._speaker_mapping: dict[str, int] | None = None
         self._exo_settings: exporter.ExoSettings | None = None
@@ -475,6 +529,51 @@ class Api:
             logger.exception("文字起こしエラー")
             return {"success": False, "error": str(e)}
 
+    def import_text(self, text: str, ms_per_char: int, settings_dict: dict):
+        """改行区切りテキストを文字起こし結果として取り込む。"""
+        try:
+            segments = segments_from_text(text, ms_per_char)
+            exo_settings = self._exo_settings
+            if settings_dict.get("exo_settings"):
+                exo_settings = exporter.ExoSettings.from_dict(
+                    settings_dict["exo_settings"]
+                )
+            text_output = exporter.export_exo(
+                segments,
+                settings=exo_settings,
+            )
+            duration_ms = math.ceil(segments[-1].end * 1000)
+            silent_wav_path = audio.create_silent_wav(duration_ms)
+
+            self._cleanup_wav()
+            self._speaker_mapping = None
+            self._last_output_format = "exo"
+            self._exo_settings = exo_settings
+            result = transcriber.TranscriptionResult(
+                segments=list(segments),
+                language="text",
+                language_probability=1.0,
+            )
+            self._last_result = result
+            self._last_segments = segments
+            self._audio_mode = "silence"
+            self._last_wav_path = silent_wav_path
+            self._silent_wav_duration_ms = duration_ms
+
+            speaker_info = self._build_speaker_info(segments)
+            return {
+                "success": True,
+                "text": text_output,
+                "num_segments": len(segments),
+                "num_speakers": len(speaker_info),
+                "language": result.language,
+                "input_type": "text",
+                "speakers": speaker_info,
+            }
+        except Exception as e:
+            logger.exception("テキスト取り込みエラー")
+            return {"success": False, "error": str(e)}
+
     def _run_transcription(self, file_path: str, settings_dict: dict):
         model_size = settings_dict.get("model_size", "medium")
         language = settings_dict.get("language")
@@ -543,6 +642,8 @@ class Api:
         self._last_result = result
         self._last_segments = segments
         self._last_wav_path = wav_path  # 話者サンプル再生用に保持
+        self._audio_mode = "source"
+        self._silent_wav_duration_ms = 0
 
         # 話者情報を構築
         speaker_info = self._build_speaker_info(segments)
@@ -838,6 +939,24 @@ class Api:
             except OSError:
                 pass
             self._last_wav_path = None
+        self._silent_wav_duration_ms = 0
+
+    def _sync_silent_wav(self):
+        """テキスト入力のタイムライン長に合わせて無音WAVを同期する。"""
+        if self._audio_mode != "silence" or not self._last_segments:
+            return
+        duration_ms = max(1, math.ceil(
+            max(segment.end for segment in self._last_segments) * 1000
+        ))
+        if (
+            self._last_wav_path
+            and os.path.exists(self._last_wav_path)
+            and self._silent_wav_duration_ms == duration_ms
+        ):
+            return
+        self._cleanup_wav()
+        self._last_wav_path = audio.create_silent_wav(duration_ms)
+        self._silent_wav_duration_ms = duration_ms
 
     def load_settings(self):
         """保存された設定を読み込む。HFトークンは復号して返す。"""
@@ -873,6 +992,7 @@ class Api:
             "elevenlabs_apply_language_text_normalization",
             "elevenlabs_apply_text_normalization",
             "elevenlabs_generation_mode",
+            "elevenlabs_combined_wav_silence_ms",
             "elevenlabs_chunk_settings",
         ):
             if key not in data and key in existing:
@@ -979,6 +1099,9 @@ class Api:
         )
         saved["elevenlabs_generation_mode"] = (
             elevenlabs_tts.resolve_generation_mode(tts_settings)
+        )
+        saved["elevenlabs_combined_wav_silence_ms"] = (
+            elevenlabs_tts.normalize_combined_wav_silence_ms(tts_settings)
         )
         saved["elevenlabs_chunk_settings"] = (
             elevenlabs_tts.normalize_chunk_settings(tts_settings)
@@ -1332,6 +1455,7 @@ class Api:
         return {
             "version": PROJECT_VERSION,
             "source_file": project_data.get("source_file", ""),
+            "audio_mode": self._audio_mode,
             "language": (
                 self._last_result.language if self._last_result else ""
             ),
@@ -1431,13 +1555,21 @@ class Api:
         )
 
         source_file = data.get("source_file", "")
-        if source_file and os.path.exists(source_file):
+        audio_mode = data.get("audio_mode")
+        self._cleanup_wav()
+        if audio_mode == "silence":
+            self._audio_mode = "silence"
+            self._sync_silent_wav()
+        elif source_file and os.path.exists(source_file):
             try:
-                self._cleanup_wav()
                 wav_path = audio.convert_to_wav(source_file)
                 self._last_wav_path = wav_path
+                self._audio_mode = "source"
             except Exception:
+                self._audio_mode = "none"
                 logger.warning("WAV変換に失敗: %s", source_file)
+        else:
+            self._audio_mode = "none"
 
         speaker_info = self._build_speaker_info(segments)
 
@@ -1445,6 +1577,7 @@ class Api:
             "success": True,
             "path": path,
             "source_file": source_file,
+            "audio_mode": self._audio_mode,
             "language": language,
             "segments": [
                 {
@@ -1529,6 +1662,7 @@ class Api:
             text=text if text is not None else seg.text,
             speaker=speaker if speaker is not None else seg.speaker,
         )
+        self._sync_silent_wav()
         self._is_dirty = True
         return self._segments_response()
 
@@ -1552,6 +1686,7 @@ class Api:
             insert_idx = i + 1
         self._last_segments.insert(insert_idx, new_seg)
 
+        self._sync_silent_wav()
         self._is_dirty = True
         resp = self._segments_response()
         resp["inserted_index"] = insert_idx
@@ -1568,6 +1703,7 @@ class Api:
             return {"success": False, "error": "最後のセグメントは削除できません"}
 
         self._last_segments.pop(index)
+        self._sync_silent_wav()
         self._is_dirty = True
         return self._segments_response()
 
@@ -1596,6 +1732,7 @@ class Api:
 
         # スナップショットはマッピング適用済みのため、マッピングをリセット
         self._speaker_mapping = None
+        self._sync_silent_wav()
         self._is_dirty = True
         return self._segments_response()
 
@@ -1625,6 +1762,7 @@ class Api:
         )
         self._last_segments[index] = merged
         self._last_segments.pop(index + 1)
+        self._sync_silent_wav()
         self._is_dirty = True
         resp = self._segments_response()
         resp["merged_index"] = index

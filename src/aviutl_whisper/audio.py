@@ -56,3 +56,26 @@ def get_audio_duration(file_path: str) -> float:
     """音声ファイルの長さ（秒）を取得する。"""
     audio = AudioSegment.from_file(file_path)
     return len(audio) / 1000.0
+
+
+def create_silent_wav(
+    duration_ms: int,
+    sample_rate: int = 16000,
+    channels: int = 1,
+    output_path: str | None = None,
+) -> str:
+    """指定時間の無音WAVを作成する。"""
+    if duration_ms <= 0:
+        raise ValueError("無音音声の長さは1ms以上にしてください")
+
+    if output_path is None:
+        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        output_path = tmp.name
+        tmp.close()
+
+    silent = AudioSegment.silent(
+        duration=duration_ms,
+        frame_rate=sample_rate,
+    ).set_channels(channels)
+    silent.export(output_path, format="wav")
+    return output_path

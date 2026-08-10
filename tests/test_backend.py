@@ -3174,6 +3174,17 @@ class TestElevenLabsTts:
         assert result["skipped"][0]["index"] == 1
         assert 345 <= len(combined) <= 355
 
+        output_with_gap = tmp_path / "combined_with_gap.wav"
+        settings_with_gap = {
+            **tts_settings,
+            "combined_wav_silence_ms": 120,
+        }
+        export_combined_wav(
+            segments, settings_with_gap, output_with_gap
+        )
+        combined_with_gap = AudioSegment.from_wav(output_with_gap)
+        assert 465 <= len(combined_with_gap) <= 475
+
     def test_export_combined_wav_does_not_duplicate_v3_chunks(
         self, tmp_path
     ):
@@ -3190,6 +3201,7 @@ class TestElevenLabsTts:
             **self._settings(tmp_path),
             "model_id": "eleven_v3",
             "generation_mode": "chunk_v3",
+            "combined_wav_silence_ms": 75,
             "chunk_settings": {
                 "max_chars_per_chunk": 1200,
                 "max_segments_per_chunk": 2,
@@ -3202,6 +3214,8 @@ class TestElevenLabsTts:
         manifest = {"version": 2, "segments": {}, "chunks": {}}
         expected_duration = 0
         for chunk in chunks:
+            if expected_duration:
+                expected_duration += 75
             duration = 100 + chunk["chunk_index"] * 50
             expected_duration += duration
             relative_path = (
@@ -3253,6 +3267,39 @@ class TestElevenLabsTts:
                 self._segments(), self._settings(tmp_path), output_path
             )
         assert not output_path.exists()
+
+    def test_combined_wav_silence_setting_is_saved_and_normalized(
+        self, tmp_path, monkeypatch
+    ):
+        import json
+        from aviutl_whisper import settings
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.elevenlabs_tts import (
+            normalize_combined_wav_silence_ms,
+        )
+
+        assert normalize_combined_wav_silence_ms({}) == 0
+        assert normalize_combined_wav_silence_ms(
+            {"combined_wav_silence_ms": -100}
+        ) == 0
+        assert normalize_combined_wav_silence_ms(
+            {"combined_wav_silence_ms": "250"}
+        ) == 250
+
+        settings_path = tmp_path / "settings.json"
+        monkeypatch.setattr(
+            settings, "_get_settings_path", lambda: settings_path
+        )
+        monkeypatch.setattr(
+            settings, "encrypt_token", lambda token: "encrypted"
+        )
+        tts_settings = {
+            **self._settings(tmp_path),
+            "combined_wav_silence_ms": 250,
+        }
+        assert Api().save_tts_settings(tts_settings)["success"] is True
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert saved["elevenlabs_combined_wav_silence_ms"] == 250
 
     def test_api_saves_combined_tts_wav(self, tmp_path, monkeypatch):
         from aviutl_whisper import elevenlabs_tts, settings
@@ -3379,3 +3426,158 @@ class TestSettingsImportExportApi:
         assert loaded["exo"]["font_size"] == 60
         assert loaded["exo"]["bold"] is True
         assert result["settings"]["hf_token_decrypted"] == "decoded:old-hf-enc"
+
+
+class TestTextImport:
+    """改行テキスト取り込みのテスト。"""
+
+    def test_segments_from_text_trims_and_skips_blank_lines(self):
+        from aviutl_whisper.api import segments_from_text
+
+        segments = segments_from_text("  こんにちは  \r\n\r\n 世界 \n a b ", 100)
+
+        assert [segment.text for segment in segments] == [
+            "こんにちは", "世界", "a b",
+        ]
+        assert [(segment.start, segment.end) for segment in segments] == [
+            (0.0, 0.5),
+            (0.5, 0.7),
+            (0.7, 1.0),
+        ]
+        assert all(segment.speaker == "Speaker 1" for segment in segments)
+
+    def test_segments_from_text_applies_and_inherits_speaker_prefix(self):
+        from aviutl_whisper.api import segments_from_text
+
+        segments = segments_from_text(
+            "[Speaker1] hello\n"
+            "continued\n"
+            "[SPEAKER 2]: world\n"
+            "[Speaker 2]： same speaker\n"
+            "[speaker003]\n"
+            "third",
+            100,
+        )
+
+        assert [segment.text for segment in segments] == [
+            "hello", "continued", "world", "same speaker", "third",
+        ]
+        assert [segment.speaker for segment in segments] == [
+            "Speaker 1", "Speaker 1", "Speaker 2", "Speaker 2", "Speaker 3",
+        ]
+        assert segments[0].start == 0.0
+        for previous, current in zip(segments, segments[1:]):
+            assert current.start == previous.end
+        for segment in segments:
+            assert segment.end - segment.start == pytest.approx(
+                len(segment.text) * 0.1
+            )
+
+    def test_segments_from_text_leaves_invalid_prefixes_in_text(self):
+        from aviutl_whisper.api import segments_from_text
+
+        segments = segments_from_text(
+            "[Speaker0] zero\n[Speaker00] zeros\n[Alice] name\n[SpeakerX] invalid",
+            100,
+        )
+
+        assert [segment.text for segment in segments] == [
+            "[Speaker0] zero",
+            "[Speaker00] zeros",
+            "[Alice] name",
+            "[SpeakerX] invalid",
+        ]
+        assert all(segment.speaker == "Speaker 1" for segment in segments)
+
+    def test_segments_from_text_uses_exact_integer_milliseconds(self):
+        from aviutl_whisper.api import segments_from_text
+
+        segments = segments_from_text("a\nbb\nccc", 10)
+        assert [(segment.start, segment.end) for segment in segments] == [
+            (0.0, 0.01),
+            (0.01, 0.03),
+            (0.03, 0.06),
+        ]
+
+    @pytest.mark.parametrize("text", ["", "   ", "\r\n \n\t"])
+    def test_segments_from_text_rejects_empty_input(self, text):
+        from aviutl_whisper.api import segments_from_text
+
+        with pytest.raises(ValueError, match="有効なテキスト行"):
+            segments_from_text(text, 100)
+
+    @pytest.mark.parametrize("value", [0, -1, 1.5, True, "100", float("inf")])
+    def test_segments_from_text_rejects_invalid_duration(self, value):
+        from aviutl_whisper.api import segments_from_text
+
+        with pytest.raises(ValueError, match="正の整数"):
+            segments_from_text("text", value)
+
+    def test_create_silent_wav(self, tmp_path):
+        from pydub import AudioSegment
+
+        from aviutl_whisper.audio import create_silent_wav
+
+        output = tmp_path / "silent.wav"
+        result = create_silent_wav(250, output_path=str(output))
+        silent = AudioSegment.from_wav(result)
+
+        assert abs(len(silent) - 250) <= 1
+        assert silent.frame_rate == 16000
+        assert silent.channels == 1
+
+    def test_import_text_builds_result_and_silent_audio(self, tmp_path, monkeypatch):
+        from aviutl_whisper.api import Api
+
+        durations = []
+
+        def fake_create_silent_wav(duration_ms):
+            durations.append(duration_ms)
+            path = tmp_path / f"silent-{len(durations)}.wav"
+            path.write_bytes(b"silent")
+            return str(path)
+
+        monkeypatch.setattr(
+            "aviutl_whisper.api.audio.create_silent_wav",
+            fake_create_silent_wav,
+        )
+        api = Api()
+        result = api.import_text(" 一行 \n\n二行目 ", 100, {"exo_settings": {}})
+
+        assert result["success"] is True
+        assert result["input_type"] == "text"
+        assert result["num_segments"] == 2
+        assert durations == [500]
+        assert api._audio_mode == "silence"
+        assert api._silent_wav_duration_ms == 500
+        assert [segment.text for segment in api._last_segments] == ["一行", "二行目"]
+
+        api.update_segment(1, end=0.8)
+        assert durations == [500, 800]
+
+    def test_invalid_import_preserves_existing_result(self):
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.transcriber import TranscriptionSegment
+
+        api = Api()
+        existing = [TranscriptionSegment(0.0, 1.0, "existing", "Speaker 1")]
+        api._last_segments = existing
+
+        result = api.import_text(" \n ", 100, {"exo_settings": {}})
+
+        assert result["success"] is False
+        assert api._last_segments is existing
+
+    def test_silent_audio_mode_is_saved_and_loaded(self, tmp_path, monkeypatch):
+        import json
+        from unittest.mock import MagicMock
+
+        from aviutl_whisper.api import Api
+        from aviutl_whisper.transcriber import TranscriptionResult, TranscriptionSegment
+
+        segments = [TranscriptionSegment(0.0, 0.4, "text", "Speaker 1")]
+        api = Api()
+        api._last_segments = segments
+        api._last_result = TranscriptionResult(segments, "text", 1.0)
+        api._audio_mode = "silence"
+        data = api._build_project_data({"source_file": "", "exo_settings": {}})

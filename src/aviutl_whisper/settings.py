@@ -31,6 +31,7 @@ DEFAULT_SETTINGS = {
     "elevenlabs_apply_language_text_normalization": False,
     "elevenlabs_apply_text_normalization": "auto",
     "elevenlabs_generation_mode": "per_segment_context",
+    "elevenlabs_combined_wav_silence_ms": 0,
     "elevenlabs_chunk_settings": {
         "max_chars_per_chunk": 1200,
         "max_segments_per_chunk": 8,

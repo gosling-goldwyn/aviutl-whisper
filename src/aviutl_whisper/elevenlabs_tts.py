@@ -37,6 +37,7 @@ DEFAULT_CHUNK_SETTINGS = {
     "max_segments_per_chunk": 8,
     "split_on_speaker_change": False,
 }
+DEFAULT_COMBINED_WAV_SILENCE_MS = 0
 MODEL_UNSUPPORTED_FIELDS = {
     "eleven_v3": {
         "previous_text",
@@ -234,6 +235,15 @@ def normalize_chunk_settings(tts_settings: dict) -> dict:
             )
         ),
     }
+
+
+def normalize_combined_wav_silence_ms(tts_settings: dict) -> int:
+    """Return a non-negative integer gap for combined WAV output."""
+    try:
+        value = int(tts_settings.get("combined_wav_silence_ms", 0))
+    except (AttributeError, TypeError, ValueError):
+        return DEFAULT_COMBINED_WAV_SILENCE_MS
+    return max(0, value)
 
 
 def compute_text_hash(
@@ -610,6 +620,7 @@ def export_combined_wav(
 
         combined = None
         frame_rate = channels = sample_width = None
+        silence_ms = normalize_combined_wav_silence_ms(tts_settings)
         for item in available:
             audio = AudioSegment.from_file(item["audio_path"])
             if combined is None:
@@ -621,6 +632,13 @@ def export_combined_wav(
             audio = audio.set_frame_rate(frame_rate)
             audio = audio.set_channels(channels)
             audio = audio.set_sample_width(sample_width)
+            if silence_ms:
+                silence = AudioSegment.silent(
+                    duration=silence_ms, frame_rate=frame_rate
+                )
+                silence = silence.set_channels(channels)
+                silence = silence.set_sample_width(sample_width)
+                combined += silence
             combined += audio
 
         destination = Path(output_path)

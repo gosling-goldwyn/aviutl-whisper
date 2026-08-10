@@ -114,3 +114,39 @@ def test_load_project_updates_ui(page: Page):
         "document.querySelectorAll('#segment-table-body tr').length >= 2"
     )
     assert page.locator("#segment-table-body tr").count() == 2
+
+
+def test_load_silent_text_project_updates_input_label(page: Page):
+    """テキスト由来プロジェクトは無音入力として表示される。"""
+    mock_api_method(
+        page,
+        "load_project",
+        {
+            "success": True,
+            "source_file": "",
+            "audio_mode": "silence",
+            "num_segments": 1,
+            "num_speakers": 1,
+            "language": "text",
+            "speakers": [],
+            "exo_settings": {},
+            "preview_index": 0,
+        },
+    )
+    mock_api_method(
+        page,
+        "get_preview_segments",
+        {
+            "success": True,
+            "segments": [
+                {"start": 0.0, "end": 0.4, "speaker": "Speaker 1", "text": "text"},
+            ],
+        },
+    )
+
+    page.locator("#btn-load-project").click()
+    page.wait_for_function(
+        "document.querySelectorAll('#segment-table-body tr').length === 1"
+    )
+
+    assert page.locator("#file-name").inner_text() == "テキスト入力（無音）"
