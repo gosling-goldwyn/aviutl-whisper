@@ -726,8 +726,14 @@ class Api:
         if exo_settings:
             self._exo_settings = exporter.ExoSettings.from_dict(exo_settings)
 
-        # マッピング適用
-        segments = _apply_speaker_mapping(self._last_segments, speaker_mapping)
+        # フロントエンドから渡された値を優先し、省略時はAPI内部の状態を使う。
+        # プロジェクト再読込後など、UIがまだマッピングを再送していない場合も
+        # 入れ替え状態を失わずにexoへ反映する。
+        if speaker_mapping is not None:
+            self._speaker_mapping = speaker_mapping
+        segments = _apply_speaker_mapping(
+            self._last_segments, self._speaker_mapping
+        )
 
         label, ext, _ = exporter.EXPORTERS.get(format_type, ("テキスト", ".txt", None))
         file_types = (f"{label}ファイル (*{ext})",)
@@ -1451,7 +1457,9 @@ class Api:
         if not self._last_segments:
             return None
         mapping = self._speaker_mapping
-        segments = _apply_speaker_mapping(self._last_segments, mapping)
+        # セグメントは元の話者ラベルのまま保存し、マッピングを別フィールドに
+        # 保存する。読み込み時にマッピングを一度だけ適用できるようにする。
+        segments = self._last_segments
         return {
             "version": PROJECT_VERSION,
             "source_file": project_data.get("source_file", ""),
@@ -1593,6 +1601,7 @@ class Api:
             "num_speakers": len(speaker_info),
             "exo_settings": data.get("exo_settings", {}),
             "preview_index": data.get("preview_index", 0),
+            "speaker_mapping": self._speaker_mapping,
         }
 
     # --- セグメント編集 ---

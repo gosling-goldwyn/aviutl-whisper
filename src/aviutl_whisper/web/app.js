@@ -1004,6 +1004,7 @@ async function loadProject() {
         lastSpeakers = result.speakers || [];
         if (lastSpeakers.length > 1) {
             renderSpeakerMapping(lastSpeakers);
+            restoreSpeakerMapping(result.speaker_mapping);
             show($("#speaker-mapping-section"));
         } else {
             hide($("#speaker-mapping-section"));
@@ -1133,6 +1134,30 @@ function renderSpeakerMapping(speakers) {
     } else {
         hide(swapBtn);
     }
+}
+
+function restoreSpeakerMapping(mapping) {
+    if (!mapping || typeof mapping !== "object") return;
+
+    currentMapping = {};
+    document.querySelectorAll(".mapping-select").forEach(sel => {
+        const value = mapping[sel.dataset.speaker];
+        const slot = Number.isInteger(value) ? value : parseInt(value);
+        if (Number.isInteger(slot)) {
+            sel.value = String(slot);
+            currentMapping[sel.dataset.speaker] = slot;
+        }
+    });
+
+    const colors = exoDefaults?.speaker_colors || DEFAULT_SPEAKER_COLORS;
+    document.querySelectorAll(".mapping-select").forEach(sel => {
+        const slot = parseInt(sel.value);
+        const row = sel.closest(".speaker-mapping-row");
+        const dot = row.querySelector(".color-preview-dot");
+        if (dot && Number.isInteger(slot)) {
+            dot.style.background = "#" + colors[slot % colors.length];
+        }
+    });
 }
 
 async function playSpeakerSample(speakerName) {
