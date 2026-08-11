@@ -90,3 +90,84 @@ def test_progress_area_visible_during_transcription(page: Page):
     page.locator("#progress-area").wait_for(state="visible", timeout=3000)
     # 完了後に非表示
     page.locator("#progress-area").wait_for(state="hidden", timeout=5000)
+
+
+def test_text_input_modal_opens_and_closes(page: Page):
+    """テキスト入力モーダルを開閉できる。"""
+    page.locator("#btn-open-text-input").click()
+    page.locator("#text-input-modal").wait_for(state="visible")
+    assert page.locator("#text-ms-per-char").input_value() == "100"
+
+    page.locator("#btn-cancel-text-input").click()
+    page.locator("#text-input-modal").wait_for(state="hidden")
+
+
+def test_create_transcription_result_from_multiline_text(page: Page):
+    """貼り付けた各行が連続するセグメントとして一覧に表示される。"""
+    page.evaluate("""
+        window.__textImportArgs = null;
+        const importedSegments = [
+            {start: 0.0, end: 0.5, text: 'こんにちは', speaker: 'Speaker 1'},
+            {start: 0.5, end: 0.7, text: '世界', speaker: 'Speaker 2'},
+        ];
+        pywebview.api.import_text = (text, msPerChar, settings) => {
+            window.__textImportArgs = {text, msPerChar, settings};
+            return Promise.resolve({
+                success: true,
+                text: '',
+                num_segments: 2,
+                num_speakers: 2,
+                language: 'text',
+                input_type: 'text',
+                speakers: [{
+                    name: 'Speaker 1',
+                    sample_text: 'こんにちは',
+                    segment_count: 1,
+                    first_start: 0.0,
+                    first_end: 0.5,
+                }, {
+                    name: 'Speaker 2',
+                    sample_text: '世界',
+                    segment_count: 1,
+                    first_start: 0.5,
+                    first_end: 0.7,
+                }],
+            });
+        };
+        pywebview.api.get_preview_segments = () => Promise.resolve({
+            success: true,
+            segments: importedSegments,
+        });
+    """)
+
+    page.locator("#btn-open-text-input").click()
+    page.locator("#text-input-content").fill("[Speaker1] こんにちは\n[Speaker 2]: 世界")
+    page.locator("#btn-create-from-text").click()
+
+    page.wait_for_function(
+        "document.querySelectorAll('#segment-table-body tr').length === 2"
+    )
+    args = page.evaluate("window.__textImportArgs")
+    assert args["text"] == "[Speaker1] こんにちは\n[Speaker 2]: 世界"
+    assert args["msPerChar"] == 100
+
+    rows = page.locator("#segment-table-body tr")
+    assert rows.nth(0).locator(".col-text").inner_text() == "こんにちは"
+    assert "Speaker 1" in rows.nth(0).locator(".col-speaker").inner_text()
+    assert "00:00.0 → 00:00.5" in rows.nth(0).locator(".col-time").inner_text()
+    assert rows.nth(1).locator(".col-text").inner_text() == "世界"
+    assert "Speaker 2" in rows.nth(1).locator(".col-speaker").inner_text()
+    assert "00:00.5 → 00:00.7" in rows.nth(1).locator(".col-time").inner_text()
+    assert page.locator("#file-name").inner_text() == "テキスト入力（無音）"
+    assert "テキスト入力" in page.locator("#result-stats").inner_text()
+    assert page.locator("#btn-save").is_enabled()
+    assert page.locator("#btn-save-project").is_enabled()
+    assert not page.locator("#text-input-modal").is_visible()
+
+
+def test_millisecond_timeline_formatting(page: Page):
+    """10ms以下の時刻も一覧・編集欄用に失わず整形する。"""
+    assert page.evaluate("formatTimeDetailed(0.01)") == "00:00.010"
+    assert page.evaluate("formatTimeDetailed(0.1)") == "00:00.1"
+    assert page.evaluate("formatTimeInputValue(0.001)") == "0.001"
+    assert page.evaluate("formatTimeInputValue(3.5)") == "3.50"

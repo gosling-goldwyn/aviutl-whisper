@@ -313,6 +313,7 @@ body.pane-dragging-y {
 .file-select {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 10px;
 }
 
@@ -1093,6 +1094,40 @@ input[type="color"] {
 
 .modal-content-sm {
     max-width: 360px;
+}
+
+.text-input-modal-content {
+    max-width: 680px;
+}
+
+.text-input-content {
+    width: 100%;
+    resize: vertical;
+    min-height: 220px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-input);
+    color: var(--text);
+    font: inherit;
+    line-height: 1.5;
+}
+
+.text-input-content:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.text-duration-setting {
+    margin-top: 12px;
+    max-width: 240px;
+}
+
+.text-input-hint {
+    margin-top: 10px;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    line-height: 1.5;
 }
 
 /* ====== ElevenLabs TTSモーダル ====== */

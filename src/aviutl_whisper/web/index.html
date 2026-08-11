@@ -47,6 +47,7 @@
                 <h2>📁 入力ファイル</h2>
                 <div class="file-select">
                     <button id="btn-select-file" class="btn btn-primary">ファイルを選択</button>
+                    <button id="btn-open-text-input" class="btn">📝 テキストから作成</button>
                     <span id="file-name" class="file-label">未選択</span>
                 </div>
                 <div id="file-info" class="file-info hidden"></div>
@@ -239,11 +240,11 @@
                     </div>
                     <div class="seg-editor-field seg-editor-time">
                         <label>開始</label>
-                        <input type="number" id="seg-edit-start" class="seg-edit-input" step="0.1" min="0">
+                        <input type="number" id="seg-edit-start" class="seg-edit-input" step="0.001" min="0">
                     </div>
                     <div class="seg-editor-field seg-editor-time">
                         <label>終了</label>
-                        <input type="number" id="seg-edit-end" class="seg-edit-input" step="0.1" min="0">
+                        <input type="number" id="seg-edit-end" class="seg-edit-input" step="0.001" min="0">
                     </div>
                 </div>
                 <div class="seg-editor-row">
@@ -308,6 +309,10 @@
                         <option value="per_segment_context">per_segment_context</option>
                         <option value="chunk_v3">chunk_v3</option>
                     </select>
+                </div>
+                <div class="setting-item">
+                    <label for="tts-combined-wav-silence">WAV間の無音時間（ms）</label>
+                    <input type="number" id="tts-combined-wav-silence" min="0" step="1" value="0">
                 </div>
                 <div id="tts-v3-warning" class="tts-v3-warning setting-item-wide hidden">
                     eleven_v3では previous_text / next_text と language text normalization は使用できません。自然さを優先する場合はチャンク単位生成を推奨します。
@@ -419,6 +424,31 @@
                 <button id="btn-confirm-yes" class="btn btn-primary">はい</button>
                 <button id="btn-confirm-no" class="btn">いいえ</button>
                 <button id="btn-confirm-cancel" class="btn">キャンセル</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====== テキスト入力モーダル ====== -->
+    <div id="text-input-modal" class="modal-overlay hidden">
+        <div class="modal-content text-input-modal-content">
+            <div class="modal-header">
+                <h2>📝 テキストから作成</h2>
+                <button id="btn-close-text-input" class="btn-modal-close" title="閉じる">✕</button>
+            </div>
+            <div class="setting-item">
+                <label for="text-input-content">改行ごとに1セグメントとして作成します</label>
+                <textarea id="text-input-content" class="text-input-content" rows="12" placeholder="[Speaker1] 1人目のテキスト&#10;続きのテキスト&#10;[Speaker2] 2人目のテキスト"></textarea>
+            </div>
+            <div class="setting-item text-duration-setting">
+                <label for="text-ms-per-char">1文字あたりの時間（ms）</label>
+                <input type="number" id="text-ms-per-char" value="100" min="1" step="1">
+            </div>
+            <p class="text-input-hint">
+                行頭の [Speaker1] / [Speaker 2] で話者を指定でき、指定のない行は直前の話者を継承します。前後の空白と空行は除外します。30fpsのEXOでは約33ms未満の時刻はフレーム単位に丸められます。音声は無音になります。
+            </p>
+            <div class="modal-footer">
+                <button id="btn-cancel-text-input" class="btn">キャンセル</button>
+                <button id="btn-create-from-text" class="btn btn-primary">作成</button>
             </div>
         </div>
     </div>
