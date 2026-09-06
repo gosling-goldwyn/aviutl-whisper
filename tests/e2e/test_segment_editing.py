@@ -12,6 +12,45 @@ from tests.e2e.helpers import (
 pytestmark = pytest.mark.e2e
 
 
+def install_timeline_update_mock(page: Page) -> None:
+    page.evaluate("""
+        window.__lastTimelineUpdate = null;
+        pywebview.api.update_segment = (index, speaker, text, start, end) => {
+            const segments = previewSegments.map(segment => ({...segment}));
+            const updated = {
+                ...segments[index],
+                start,
+                end,
+                speaker: speaker ?? segments[index].speaker,
+                text: text ?? segments[index].text,
+            };
+            segments[index] = updated;
+            segments.sort((a, b) => a.start - b.start || a.end - b.end);
+            const updatedIndex = segments.indexOf(updated);
+            window.__lastTimelineUpdate = {index, start, end};
+            return Promise.resolve({
+                success: true,
+                segments,
+                updated_index: updatedIndex,
+            });
+        };
+        window.__timelineMockReady = true;
+    """)
+
+
+def drag_horizontally(page: Page, locator, delta_x: float) -> None:
+    locator.scroll_into_view_if_needed()
+    box = locator.bounding_box()
+    assert box is not None
+    x = box["x"] + box["width"] / 2
+    y = box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + delta_x, y, steps=4)
+    page.mouse.up()
+    page.wait_for_function("window.__lastTimelineUpdate !== null")
+
+
 class TestSegmentTableDisplay:
     def test_segment_table_shows_all_rows(self, mock_segments: Page):
         """モックセグメント注入後、セグメントテーブルに 3 行表示される。"""
@@ -56,6 +95,108 @@ class TestSegmentTableNavigation:
         """2 行目をクリックするとプレビューナビゲーションが '2 / 3' に変わる。"""
         mock_segments.locator("#segment-table-body tr").nth(1).click()
         assert get_preview_nav_text(mock_segments) == "2 / 3"
+
+
+class TestSegmentTimeline:
+    def test_switches_between_table_and_timeline(self, mock_segments: Page):
+        page = mock_segments
+        page.locator("#btn-segment-view-timeline").click()
+        assert page.locator("#segment-table-wrap").is_hidden()
+        assert page.locator("#segment-timeline-wrap").is_visible()
+        assert page.locator(".timeline-lane").count() == 2
+        assert page.locator(".timeline-segment").count() == 3
+
+        page.locator("#btn-segment-view-table").click()
+        assert page.locator("#segment-table-wrap").is_visible()
+        assert page.locator("#segment-timeline-wrap").is_hidden()
+
+    def test_clicking_resize_handle_does_not_scroll_timeline(self, mock_segments: Page):
+        page = mock_segments
+        page.locator("#btn-segment-view-timeline").click()
+        scroll = page.locator("#segment-timeline-scroll")
+        scroll.evaluate("element => { element.scrollLeft = 120; }")
+        handle = page.locator(
+            '.timeline-segment[data-segment-index="0"] .timeline-resize-handle.end'
+        )
+        box = handle.bounding_box()
+        assert box is not None
+        before = scroll.evaluate("element => element.scrollLeft")
+        page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        page.wait_for_timeout(100)
+        after = scroll.evaluate("element => element.scrollLeft")
+        assert after == pytest.approx(before)
+
+    def test_drag_auto_scrolls_only_at_timeline_edge(self, mock_segments: Page):
+        page = mock_segments
+        install_timeline_update_mock(page)
+        page.locator("#btn-segment-view-timeline").click()
+        scroll = page.locator("#segment-timeline-scroll")
+        scroll_box = scroll.bounding_box()
+        block_box = page.locator(
+            '.timeline-segment[data-segment-index="0"]'
+        ).bounding_box()
+        assert scroll_box is not None
+        assert block_box is not None
+        start_x = block_box["x"] + block_box["width"] / 2
+        y = block_box["y"] + block_box["height"] / 2
+        page.mouse.move(start_x, y)
+        page.mouse.down()
+        page.mouse.move(scroll_box["x"] + scroll_box["width"] - 2, y, steps=4)
+        page.wait_for_timeout(150)
+        assert scroll.evaluate("element => element.scrollLeft") > 0
+        page.mouse.up()
+        page.wait_for_function("window.__lastTimelineUpdate !== null")
+
+    def test_drag_moves_segment_freely(self, mock_segments: Page):
+        page = mock_segments
+        install_timeline_update_mock(page)
+        page.locator("#btn-segment-view-timeline").click()
+        drag_horizontally(
+            page,
+            page.locator('.timeline-segment[data-segment-index="0"]'),
+            40,
+        )
+        update = page.evaluate("window.__lastTimelineUpdate")
+        assert update["start"] == pytest.approx(0.5)
+        assert update["end"] == pytest.approx(4.0)
+        assert page.locator("#menu-undo").is_enabled()
+
+    def test_drag_snaps_end_to_nearby_segment_start(self, mock_segments: Page):
+        page = mock_segments
+        install_timeline_update_mock(page)
+        page.locator("#btn-segment-view-timeline").click()
+        drag_horizontally(
+            page,
+            page.locator('.timeline-segment[data-segment-index="0"]'),
+            24,
+        )
+        update = page.evaluate("window.__lastTimelineUpdate")
+        assert update["start"] == pytest.approx(0.3)
+        assert update["end"] == pytest.approx(3.8)
+
+    def test_drag_start_handle_snaps_to_previous_end(self, mock_segments: Page):
+        page = mock_segments
+        install_timeline_update_mock(page)
+        page.locator("#btn-segment-view-timeline").click()
+        handle = page.locator(
+            '.timeline-segment[data-segment-index="1"] .timeline-resize-handle.start'
+        )
+        drag_horizontally(page, handle, -24)
+        update = page.evaluate("window.__lastTimelineUpdate")
+        assert update["start"] == pytest.approx(3.5)
+        assert update["end"] == pytest.approx(7.2)
+
+    def test_drag_end_handle_snaps_to_next_start(self, mock_segments: Page):
+        page = mock_segments
+        install_timeline_update_mock(page)
+        page.locator("#btn-segment-view-timeline").click()
+        handle = page.locator(
+            '.timeline-segment[data-segment-index="0"] .timeline-resize-handle.end'
+        )
+        drag_horizontally(page, handle, 24)
+        update = page.evaluate("window.__lastTimelineUpdate")
+        assert update["start"] == pytest.approx(0.0)
+        assert update["end"] == pytest.approx(3.8)
 
 
 class TestSegmentEditorPanel:
@@ -123,3 +264,33 @@ class TestSegmentUpdate:
         page.wait_for_timeout(300)
         rows = get_segment_table_rows(page)
         assert len(rows) == 2
+
+    def test_duplicate_segment_selects_copy(self, mock_segments: Page):
+        page = mock_segments
+        page.evaluate("""
+            window.__duplicatedIndex = null;
+            pywebview.api.duplicate_segment = (index) => {
+                const source = previewSegments[index];
+                const duration = source.end - source.start;
+                const duplicated = {
+                    ...source,
+                    start: source.end,
+                    end: source.end + duration,
+                };
+                const segments = [...previewSegments, duplicated];
+                segments.sort((a, b) => a.start - b.start || a.end - b.end);
+                const duplicatedIndex = segments.indexOf(duplicated);
+                window.__duplicatedIndex = duplicatedIndex;
+                return Promise.resolve({
+                    success: true,
+                    segments,
+                    duplicated_index: duplicatedIndex,
+                });
+            };
+            window.__duplicateMockReady = true;
+        """)
+        page.locator("#btn-seg-duplicate").click()
+        page.wait_for_function("window.__duplicatedIndex !== null")
+        assert len(get_segment_table_rows(page)) == 4
+        assert get_preview_nav_text(page) == "2 / 4"
+        assert page.locator("#seg-edit-text").input_value() == "こんにちは、テストです。"
