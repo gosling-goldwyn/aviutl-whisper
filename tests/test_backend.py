@@ -956,6 +956,26 @@ class TestSegmentEditing:
         assert api._last_segments[0].start == 0.5
         assert api._last_segments[0].end == 2.0
 
+    def test_update_segment_time_reorders_and_returns_new_index(self):
+        api = self._make_api_with_segments()
+        res = api.update_segment(0, start=4.0, end=4.8)
+        assert res["success"] is True
+        assert res["updated_index"] == 2
+        assert [segment.text for segment in api._last_segments] == [
+            "元気ですか", "はい元気です", "こんにちは",
+        ]
+
+    @pytest.mark.parametrize(
+        ("start", "end"),
+        [(-0.1, 1.0), (1.0, 1.0), (1.0, 1.01), (float("nan"), 2.0)],
+    )
+    def test_update_segment_rejects_invalid_time(self, start, end):
+        api = self._make_api_with_segments()
+        original = list(api._last_segments)
+        res = api.update_segment(0, start=start, end=end)
+        assert res["success"] is False
+        assert api._last_segments == original
+
     def test_update_segment_invalid_index(self):
         api = self._make_api_with_segments()
         res = api.update_segment(99, text="x")
@@ -986,6 +1006,21 @@ class TestSegmentEditing:
     def test_add_segment_invalid_time(self):
         api = self._make_api_with_segments()
         res = api.add_segment(5.0, 3.0, "逆転", "Speaker 1")
+        assert res["success"] is False
+
+    def test_duplicate_segment_places_copy_after_source_time(self):
+        api = self._make_api_with_segments()
+        res = api.duplicate_segment(0)
+        assert res["success"] is True
+        duplicated = api._last_segments[res["duplicated_index"]]
+        assert duplicated.start == 1.5
+        assert duplicated.end == 3.0
+        assert duplicated.text == "こんにちは"
+        assert duplicated.speaker == "Speaker 1"
+
+    def test_duplicate_segment_invalid_index(self):
+        api = self._make_api_with_segments()
+        res = api.duplicate_segment(99)
         assert res["success"] is False
 
     def test_delete_segment(self):
@@ -2289,6 +2324,13 @@ class TestProjectPersistence:
         api = self._make_api_with_segments()
         assert api._is_dirty is False
         api.add_segment(3.0, 4.0, "新しいセグメント")
+        assert api._is_dirty is True
+
+    def test_duplicate_segment_marks_dirty(self):
+        """duplicate_segmentでdirtyがTrue。"""
+        api = self._make_api_with_segments()
+        assert api._is_dirty is False
+        api.duplicate_segment(0)
         assert api._is_dirty is True
 
     def test_delete_segment_marks_dirty(self):
