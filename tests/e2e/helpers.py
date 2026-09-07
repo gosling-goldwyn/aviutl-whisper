@@ -69,6 +69,8 @@ def reset_app_state(page: Page) -> None:
         document.querySelectorAll('.menu-entry').forEach(e => e.classList.remove('open'));
         previewSegments = [];
         previewIndex = 0;
+        setSegmentView('table', false);
+        document.getElementById('segment-timeline-scroll').scrollLeft = 0;
         isDirty = false;
         selectedFile = null;
         isProcessing = false;

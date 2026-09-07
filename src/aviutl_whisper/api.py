@@ -1665,23 +1665,57 @@ class Api:
             return {"success": False, "error": "無効なインデックス"}
 
         seg = self._last_segments[index]
-        self._last_segments[index] = transcriber.TranscriptionSegment(
-            start=start if start is not None else seg.start,
-            end=end if end is not None else seg.end,
+        try:
+            next_start = float(start) if start is not None else seg.start
+            next_end = float(end) if end is not None else seg.end
+        except (TypeError, ValueError):
+            return {"success": False, "error": "開始時刻と終了時刻には数値を指定してください"}
+        time_error = self._validate_segment_times(next_start, next_end)
+        if time_error:
+            return {"success": False, "error": time_error}
+
+        updated = transcriber.TranscriptionSegment(
+            start=next_start,
+            end=next_end,
             text=text if text is not None else seg.text,
             speaker=speaker if speaker is not None else seg.speaker,
         )
+        self._last_segments[index] = updated
+        self._last_segments.sort(key=lambda item: (item.start, item.end))
         self._sync_silent_wav()
         self._is_dirty = True
-        return self._segments_response()
+        resp = self._segments_response()
+        resp["updated_index"] = next(
+            i for i, item in enumerate(self._last_segments) if item is updated
+        )
+        return resp
+
+    @staticmethod
+    def _validate_segment_times(start: float, end: float):
+        """セグメント時刻の共通バリデーション。"""
+        if not math.isfinite(start) or not math.isfinite(end):
+            return "開始時刻と終了時刻には有限の数値を指定してください"
+        if start < 0:
+            return "開始時刻は0秒以上にしてください"
+        if end <= start:
+            return "開始時刻は終了時刻より前にしてください"
+        if end - start < 0.05:
+            return "セグメントの長さは0.05秒以上にしてください"
+        return None
 
     def add_segment(self, start: float, end: float, text: str,
                     speaker: str = "Speaker 1"):
         """新しいセグメントを時刻順に挿入する。"""
         if not self._last_segments:
             return {"success": False, "error": "結果がありません"}
-        if start >= end:
-            return {"success": False, "error": "開始時刻は終了時刻より前にしてください"}
+        try:
+            start = float(start)
+            end = float(end)
+        except (TypeError, ValueError):
+            return {"success": False, "error": "開始時刻と終了時刻には数値を指定してください"}
+        time_error = self._validate_segment_times(start, end)
+        if time_error:
+            return {"success": False, "error": time_error}
         self._bake_mapping()
 
         new_seg = transcriber.TranscriptionSegment(
@@ -1699,6 +1733,33 @@ class Api:
         self._is_dirty = True
         resp = self._segments_response()
         resp["inserted_index"] = insert_idx
+        return resp
+
+    def duplicate_segment(self, index: int):
+        """セグメントを同じ内容・長さで元セグメントの直後に複製する。"""
+        if not self._last_segments:
+            return {"success": False, "error": "結果がありません"}
+        self._bake_mapping()
+        if index < 0 or index >= len(self._last_segments):
+            return {"success": False, "error": "無効なインデックス"}
+
+        source = self._last_segments[index]
+        duration = source.end - source.start
+        duplicated = transcriber.TranscriptionSegment(
+            start=source.end,
+            end=source.end + duration,
+            text=source.text,
+            speaker=source.speaker,
+        )
+        self._last_segments.append(duplicated)
+        self._last_segments.sort(key=lambda item: (item.start, item.end))
+
+        self._sync_silent_wav()
+        self._is_dirty = True
+        resp = self._segments_response()
+        resp["duplicated_index"] = next(
+            i for i, item in enumerate(self._last_segments) if item is duplicated
+        )
         return resp
 
     def delete_segment(self, index: int):

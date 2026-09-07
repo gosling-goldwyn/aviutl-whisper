@@ -21,6 +21,19 @@ let selectedTtsStatusTimer = null;
 let selectedTtsStatusRequestId = 0;
 let selectedTtsStatusItem = null;
 
+// --- セグメント表示 / タイムライン ---
+let segmentViewMode = "table";
+let timelinePixelsPerSecond = 80;
+let timelineDragState = null;
+const TIMELINE_LABEL_WIDTH = 92;
+const TIMELINE_SNAP_PX = 10;
+const TIMELINE_MIN_DURATION = 0.05;
+const TIMELINE_AUTO_SCROLL_EDGE_PX = 36;
+const TIMELINE_AUTO_SCROLL_MAX_PX = 18;
+const TIMELINE_ZOOM_MIN = 20;
+const TIMELINE_ZOOM_MAX = 240;
+const TIMELINE_ZOOM_STEP = 20;
+
 // --- セグメントテキスト編集セッション管理 ---
 let _segTextEditStarted = false;
 let _segTextDebounceTimer = null;
@@ -62,12 +75,15 @@ const LAYOUT_STORAGE_KEYS = {
     leftCollapsed: "aviutlWhisper.leftSidebarCollapsed",
     rightWidth: "aviutlWhisper.rightPaneWidth",
     segmentListHeight: "aviutlWhisper.segmentListHeight",
+    segmentViewMode: "aviutlWhisper.segmentViewMode",
+    timelineZoom: "aviutlWhisper.timelineZoom",
 };
 
 // --- 初期化 ---
 document.addEventListener("DOMContentLoaded", () => {
     initEventListeners();
     initPaneLayout();
+    initSegmentView();
     updateHfTokenVisibility();
     renderSpeakerColors();
     renderSpeakerTachie();
@@ -116,6 +132,13 @@ function initEventListeners() {
     $("#btn-next-seg").addEventListener("click", () => navigatePreview(1));
     $("#btn-seg-apply").addEventListener("click", applySegmentEdit);
     $("#btn-seg-play").addEventListener("click", playSegmentAudio);
+    $("#btn-segment-view-table").addEventListener("click", () => setSegmentView("table"));
+    $("#btn-segment-view-timeline").addEventListener("click", () => setSegmentView("timeline"));
+    $("#btn-timeline-zoom-out").addEventListener("click", () => changeTimelineZoom(-TIMELINE_ZOOM_STEP));
+    $("#btn-timeline-zoom-in").addEventListener("click", () => changeTimelineZoom(TIMELINE_ZOOM_STEP));
+    document.addEventListener("pointermove", handleTimelinePointerMove);
+    document.addEventListener("pointerup", finishTimelineDrag);
+    document.addEventListener("pointercancel", cancelTimelineDrag);
 
     // テキストボックスの変更を自動でプレビューに反映
     const segTextEl = $("#seg-edit-text");
@@ -133,6 +156,7 @@ function initEventListeners() {
         _segTextEditStarted = false;
     });
     $("#btn-seg-add").addEventListener("click", addSegment);
+    $("#btn-seg-duplicate").addEventListener("click", duplicateSegment);
     $("#btn-seg-merge-prev").addEventListener("click", mergePrevSegment);
     $("#btn-seg-merge-next").addEventListener("click", mergeNextSegment);
     $("#btn-seg-delete").addEventListener("click", deleteSegment);
@@ -1522,8 +1546,69 @@ function schedulePreviewRedraw() {
 }
 
 // ============================================================
-// セグメント一覧テーブル
+// セグメント一覧（表 / タイムライン）
 // ============================================================
+
+function initSegmentView() {
+    const savedMode = readStorage(LAYOUT_STORAGE_KEYS.segmentViewMode);
+    const savedZoom = parseInt(readStorage(LAYOUT_STORAGE_KEYS.timelineZoom), 10);
+    if (Number.isFinite(savedZoom)) {
+        timelinePixelsPerSecond = Math.min(
+            TIMELINE_ZOOM_MAX,
+            Math.max(TIMELINE_ZOOM_MIN, savedZoom)
+        );
+    }
+    setSegmentView(savedMode === "timeline" ? "timeline" : "table", false);
+}
+
+function setSegmentView(mode, persist = true) {
+    segmentViewMode = mode === "timeline" ? "timeline" : "table";
+    const isTimeline = segmentViewMode === "timeline";
+    $("#segment-table-wrap").classList.toggle("hidden", isTimeline);
+    $("#segment-timeline-wrap").classList.toggle("hidden", !isTimeline);
+    $("#timeline-zoom-controls").classList.toggle("hidden", !isTimeline);
+
+    const tableButton = $("#btn-segment-view-table");
+    const timelineButton = $("#btn-segment-view-timeline");
+    tableButton.classList.toggle("active", !isTimeline);
+    timelineButton.classList.toggle("active", isTimeline);
+    tableButton.setAttribute("aria-pressed", String(!isTimeline));
+    timelineButton.setAttribute("aria-pressed", String(isTimeline));
+
+    if (persist) {
+        writeStorage(LAYOUT_STORAGE_KEYS.segmentViewMode, segmentViewMode);
+    }
+    if (isTimeline) renderSegmentTimeline();
+    highlightSegmentTableRow();
+}
+
+function changeTimelineZoom(delta) {
+    const scroll = $("#segment-timeline-scroll");
+    const oldZoom = timelinePixelsPerSecond;
+    const centerTime = Math.max(
+        0,
+        (scroll.scrollLeft + scroll.clientWidth / 2 - TIMELINE_LABEL_WIDTH) / oldZoom
+    );
+    timelinePixelsPerSecond = Math.min(
+        TIMELINE_ZOOM_MAX,
+        Math.max(TIMELINE_ZOOM_MIN, timelinePixelsPerSecond + delta)
+    );
+    writeStorage(LAYOUT_STORAGE_KEYS.timelineZoom, String(timelinePixelsPerSecond));
+    renderSegmentTimeline();
+    scroll.scrollLeft = Math.max(
+        0,
+        TIMELINE_LABEL_WIDTH + centerTime * timelinePixelsPerSecond - scroll.clientWidth / 2
+    );
+}
+
+function selectPreviewSegment(index) {
+    if (index < 0 || index >= previewSegments.length) return;
+    previewIndex = index;
+    renderPreviewImage();
+    updatePreviewNav();
+    populateSegmentEditor();
+    highlightSegmentTableRow();
+}
 
 function renderSegmentTable() {
     const tbody = $("#segment-table-body");
@@ -1533,6 +1618,7 @@ function renderSegmentTable() {
     if (previewSegments.length === 0) {
         tbody.innerHTML = "";
         show(empty);
+        renderSegmentTimeline();
         return;
     }
 
@@ -1553,15 +1639,323 @@ function renderSegmentTable() {
         `;
 
         tr.addEventListener("click", () => {
-            previewIndex = i;
-            renderPreviewImage();
-            updatePreviewNav();
-            populateSegmentEditor();
-            highlightSegmentTableRow();
+            selectPreviewSegment(i);
         });
 
         tbody.appendChild(tr);
     });
+    renderSegmentTimeline();
+}
+
+function timelineTickStep() {
+    if (timelinePixelsPerSecond >= 160) return 0.5;
+    if (timelinePixelsPerSecond >= 80) return 1;
+    if (timelinePixelsPerSecond >= 40) return 2;
+    return 5;
+}
+
+function renderSegmentTimeline() {
+    const wrap = $("#segment-timeline-wrap");
+    const scroll = $("#segment-timeline-scroll");
+    const canvas = $("#segment-timeline-canvas");
+    const ruler = $("#segment-timeline-ruler");
+    const lanes = $("#segment-timeline-lanes");
+    const empty = $("#segment-timeline-empty");
+    const zoomLabel = $("#timeline-zoom-label");
+    if (!wrap || !canvas) return;
+
+    zoomLabel.textContent = `${timelinePixelsPerSecond} px/秒`;
+    canvas.style.setProperty("--timeline-second-width", `${timelinePixelsPerSecond}px`);
+
+    if (previewSegments.length === 0) {
+        ruler.innerHTML = "";
+        lanes.innerHTML = "";
+        hide(scroll);
+        show(empty);
+        return;
+    }
+
+    show(scroll);
+    hide(empty);
+    const maxEnd = Math.max(...previewSegments.map((segment) => segment.end));
+    const timelineEnd = Math.max(10, Math.ceil(maxEnd + 1));
+    const canvasWidth = TIMELINE_LABEL_WIDTH + timelineEnd * timelinePixelsPerSecond;
+    canvas.style.width = `${Math.max(canvasWidth, scroll.clientWidth)}px`;
+
+    ruler.innerHTML = "";
+    const tickStep = timelineTickStep();
+    for (let time = 0; time <= timelineEnd; time += tickStep) {
+        const tick = document.createElement("div");
+        tick.className = "timeline-ruler-tick";
+        tick.style.left = `${TIMELINE_LABEL_WIDTH + time * timelinePixelsPerSecond}px`;
+        tick.innerHTML = `<span>${formatTimeDetailed(time)}</span>`;
+        ruler.appendChild(tick);
+    }
+
+    lanes.innerHTML = "";
+    const colors = exoDefaults?.speaker_colors || DEFAULT_SPEAKER_COLORS;
+    const speakers = [...new Set(
+        previewSegments.map((segment) => segment.speaker || "Speaker 1")
+    )].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+    for (const speaker of speakers) {
+        const lane = document.createElement("div");
+        lane.className = "timeline-lane";
+        lane.dataset.speaker = speaker;
+        const speakerIndex = getSpeakerIndex(speaker);
+        const color = colors[speakerIndex % colors.length];
+        lane.innerHTML = `
+            <div class="timeline-lane-label" title="${escapeHtml(speaker)}">
+                <span style="color:#${color}">●</span>&nbsp;${escapeHtml(speaker)}
+            </div>
+        `;
+
+        previewSegments.forEach((segment, index) => {
+            if ((segment.speaker || "Speaker 1") !== speaker) return;
+            const block = document.createElement("div");
+            block.className = "timeline-segment";
+            if (index === previewIndex) block.classList.add("active");
+            block.dataset.segmentIndex = String(index);
+            block.style.setProperty("--segment-color", `#${color}`);
+            updateTimelineBlockGeometry(block, segment.start, segment.end);
+            block.title = `${segment.speaker}\n${formatTimeDetailed(segment.start)} → ${formatTimeDetailed(segment.end)}\n${segment.text}`;
+            block.innerHTML = `
+                <div class="timeline-resize-handle start" title="開始時刻を変更"></div>
+                <div class="timeline-segment-content">
+                    <span class="timeline-segment-text">${escapeHtml(segment.text)}</span>
+                    <span class="timeline-segment-time">${formatTimeDetailed(segment.start)} → ${formatTimeDetailed(segment.end)}</span>
+                </div>
+                <div class="timeline-resize-handle end" title="終了時刻を変更"></div>
+            `;
+            block.addEventListener("click", () => selectPreviewSegment(index));
+            block.addEventListener("pointerdown", (event) => {
+                beginTimelineDrag(event, index, "move", block);
+            });
+            block.querySelector(".timeline-resize-handle.start").addEventListener("pointerdown", (event) => {
+                event.stopPropagation();
+                beginTimelineDrag(event, index, "resize-start", block);
+            });
+            block.querySelector(".timeline-resize-handle.end").addEventListener("pointerdown", (event) => {
+                event.stopPropagation();
+                beginTimelineDrag(event, index, "resize-end", block);
+            });
+            lane.appendChild(block);
+        });
+        lanes.appendChild(lane);
+    }
+}
+
+function updateTimelineBlockGeometry(block, start, end) {
+    block.style.left = `${TIMELINE_LABEL_WIDTH + start * timelinePixelsPerSecond}px`;
+    block.style.width = `${Math.max(6, (end - start) * timelinePixelsPerSecond)}px`;
+    const timeLabel = block.querySelector(".timeline-segment-time");
+    if (timeLabel) {
+        timeLabel.textContent = `${formatTimeDetailed(start)} → ${formatTimeDetailed(end)}`;
+    }
+}
+
+function beginTimelineDrag(event, index, mode, block) {
+    if (event.button !== 0 || index < 0 || index >= previewSegments.length) return;
+    event.preventDefault();
+    selectPreviewSegment(index);
+    const segment = previewSegments[index];
+    timelineDragState = {
+        index,
+        mode,
+        block,
+        pointerStartX: event.clientX,
+        pointerClientX: event.clientX,
+        initialScrollLeft: $("#segment-timeline-scroll").scrollLeft,
+        originalStart: segment.start,
+        originalEnd: segment.end,
+        nextStart: segment.start,
+        nextEnd: segment.end,
+        changed: false,
+        snapTime: null,
+        autoScrollFrame: null,
+        boundaries: previewSegments.flatMap((item, itemIndex) => (
+            itemIndex === index ? [] : [item.start, item.end]
+        )),
+    };
+    try { block.setPointerCapture(event.pointerId); } catch (error) { /* 非対応時はdocumentで追跡 */ }
+    block.classList.add("dragging");
+}
+
+function nearestTimelineBoundary(value, boundaries) {
+    const threshold = TIMELINE_SNAP_PX / timelinePixelsPerSecond;
+    let best = null;
+    for (const boundary of boundaries) {
+        const distance = Math.abs(boundary - value);
+        if (distance <= threshold && (!best || distance < best.distance)) {
+            best = { value: boundary, distance };
+        }
+    }
+    return best;
+}
+
+function handleTimelinePointerMove(event) {
+    const state = timelineDragState;
+    if (!state) return;
+    state.pointerClientX = event.clientX;
+    updateTimelineDragPosition(state);
+    scheduleTimelineAutoScroll(state);
+}
+
+function updateTimelineDragPosition(state) {
+    const scroll = $("#segment-timeline-scroll");
+    const pixelDelta = state.pointerClientX - state.pointerStartX
+        + scroll.scrollLeft - state.initialScrollLeft;
+    if (!state.changed && Math.abs(pixelDelta) < 2) return;
+    state.changed = true;
+    const timeDelta = pixelDelta / timelinePixelsPerSecond;
+    const duration = state.originalEnd - state.originalStart;
+    let start = state.originalStart;
+    let end = state.originalEnd;
+    let snap = null;
+
+    if (state.mode === "move") {
+        start = Math.max(0, state.originalStart + timeDelta);
+        end = start + duration;
+        const startSnap = nearestTimelineBoundary(start, state.boundaries);
+        let endSnap = nearestTimelineBoundary(end, state.boundaries);
+        if (endSnap && endSnap.value < duration) endSnap = null;
+        const selectedSnap = !startSnap ? endSnap
+            : !endSnap ? startSnap
+                : startSnap.distance <= endSnap.distance ? startSnap : endSnap;
+        if (selectedSnap) {
+            if (selectedSnap === startSnap) {
+                start = selectedSnap.value;
+                end = start + duration;
+            } else {
+                end = selectedSnap.value;
+                start = Math.max(0, end - duration);
+                end = start + duration;
+            }
+            snap = selectedSnap.value;
+        }
+    } else if (state.mode === "resize-start") {
+        const maxStart = state.originalEnd - TIMELINE_MIN_DURATION;
+        start = Math.min(
+            maxStart,
+            Math.max(0, state.originalStart + timeDelta)
+        );
+        let startSnap = nearestTimelineBoundary(start, state.boundaries);
+        if (startSnap && startSnap.value > maxStart) startSnap = null;
+        if (startSnap) {
+            start = startSnap.value;
+            snap = start;
+        }
+    } else {
+        const minEnd = state.originalStart + TIMELINE_MIN_DURATION;
+        end = Math.max(
+            minEnd,
+            state.originalEnd + timeDelta
+        );
+        let endSnap = nearestTimelineBoundary(end, state.boundaries);
+        if (endSnap && endSnap.value < minEnd) endSnap = null;
+        if (endSnap) {
+            end = endSnap.value;
+            snap = end;
+        }
+    }
+
+    state.nextStart = Math.round(start * 1000) / 1000;
+    state.nextEnd = Math.round(end * 1000) / 1000;
+    state.snapTime = snap;
+    updateTimelineBlockGeometry(state.block, state.nextStart, state.nextEnd);
+    $("#seg-edit-start").value = formatTimeInputValue(state.nextStart);
+    $("#seg-edit-end").value = formatTimeInputValue(state.nextEnd);
+
+    const guide = $("#segment-timeline-snap-guide");
+    guide.classList.toggle("visible", snap != null);
+    if (snap != null) {
+        guide.style.left = `${TIMELINE_LABEL_WIDTH + snap * timelinePixelsPerSecond}px`;
+    }
+}
+
+function timelineAutoScrollSpeed(state) {
+    if (!state.changed) return 0;
+    const scroll = $("#segment-timeline-scroll");
+    const rect = scroll.getBoundingClientRect();
+    const leftEdge = rect.left + TIMELINE_LABEL_WIDTH;
+    const rightEdge = rect.right;
+    const pointerX = state.pointerClientX;
+    if (pointerX < leftEdge + TIMELINE_AUTO_SCROLL_EDGE_PX) {
+        const ratio = Math.min(
+            1,
+            (leftEdge + TIMELINE_AUTO_SCROLL_EDGE_PX - pointerX)
+                / TIMELINE_AUTO_SCROLL_EDGE_PX
+        );
+        return -Math.max(2, TIMELINE_AUTO_SCROLL_MAX_PX * ratio);
+    }
+    if (pointerX > rightEdge - TIMELINE_AUTO_SCROLL_EDGE_PX) {
+        const ratio = Math.min(
+            1,
+            (pointerX - (rightEdge - TIMELINE_AUTO_SCROLL_EDGE_PX))
+                / TIMELINE_AUTO_SCROLL_EDGE_PX
+        );
+        return Math.max(2, TIMELINE_AUTO_SCROLL_MAX_PX * ratio);
+    }
+    return 0;
+}
+
+function scheduleTimelineAutoScroll(state) {
+    if (state.autoScrollFrame != null || timelineAutoScrollSpeed(state) === 0) return;
+    state.autoScrollFrame = requestAnimationFrame(() => {
+        state.autoScrollFrame = null;
+        if (timelineDragState !== state) return;
+        const scroll = $("#segment-timeline-scroll");
+        const before = scroll.scrollLeft;
+        scroll.scrollLeft += timelineAutoScrollSpeed(state);
+        if (scroll.scrollLeft !== before) {
+            updateTimelineDragPosition(state);
+            scheduleTimelineAutoScroll(state);
+        }
+    });
+}
+
+async function finishTimelineDrag() {
+    const state = timelineDragState;
+    if (!state) return;
+    timelineDragState = null;
+    if (state.autoScrollFrame != null) cancelAnimationFrame(state.autoScrollFrame);
+    state.block.classList.remove("dragging");
+    $("#segment-timeline-snap-guide").classList.remove("visible");
+    if (!state.changed) return;
+
+    pushUndo();
+    try {
+        const res = await pywebview.api.update_segment(
+            state.index, null, null, state.nextStart, state.nextEnd
+        );
+        if (res && res.success) {
+            previewIndex = res.updated_index ?? state.index;
+            handleSegmentEditResponse(res);
+        } else {
+            undoStack.pop();
+            updateUndoRedoUI();
+            renderSegmentTimeline();
+            populateSegmentEditor();
+            alert("時刻更新エラー: " + (res?.error || "不明"));
+        }
+    } catch (error) {
+        undoStack.pop();
+        updateUndoRedoUI();
+        renderSegmentTimeline();
+        populateSegmentEditor();
+        console.error("タイムライン更新エラー:", error);
+    }
+}
+
+function cancelTimelineDrag() {
+    if (!timelineDragState) return;
+    if (timelineDragState.autoScrollFrame != null) {
+        cancelAnimationFrame(timelineDragState.autoScrollFrame);
+    }
+    timelineDragState = null;
+    $("#segment-timeline-snap-guide").classList.remove("visible");
+    renderSegmentTimeline();
+    populateSegmentEditor();
 }
 
 function highlightSegmentTableRow() {
@@ -1575,6 +1969,14 @@ function highlightSegmentTableRow() {
     if (activeRow) {
         activeRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
+
+    document.querySelectorAll(".timeline-segment").forEach((block) => {
+        block.classList.toggle(
+            "active",
+            Number(block.dataset.segmentIndex) === previewIndex
+        );
+    });
+
 }
 
 function escapeHtml(text) {
@@ -1637,17 +2039,26 @@ function getKnownSpeakers() {
 
 async function applySegmentEdit(skipUndo = false) {
     if (previewSegments.length === 0) return;
-    if (!skipUndo) pushUndo();
     const speaker = $("#seg-edit-speaker").value;
     const text = $("#seg-edit-text").value;
     const start = parseFloat($("#seg-edit-start").value);
     const end = parseFloat($("#seg-edit-end").value);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        alert("開始時刻と終了時刻には数値を指定してください");
+        return;
+    }
+    if (start < 0 || end - start < TIMELINE_MIN_DURATION) {
+        alert("開始は0秒以上、セグメントの長さは0.05秒以上にしてください");
+        return;
+    }
+    if (!skipUndo) pushUndo();
 
     try {
         const res = await pywebview.api.update_segment(
             previewIndex, speaker, text, start, end
         );
         if (res && res.success) {
+            previewIndex = res.updated_index ?? previewIndex;
             handleSegmentEditResponse(res);
         } else {
             alert("更新エラー: " + (res?.error || "不明"));
@@ -1700,6 +2111,26 @@ async function addSegment() {
         }
     } catch (e) {
         console.error("セグメント追加エラー:", e);
+    }
+}
+
+async function duplicateSegment() {
+    if (previewSegments.length === 0) return;
+    pushUndo();
+    try {
+        const res = await pywebview.api.duplicate_segment(previewIndex);
+        if (res && res.success) {
+            previewIndex = res.duplicated_index ?? previewIndex;
+            handleSegmentEditResponse(res);
+        } else {
+            undoStack.pop();
+            updateUndoRedoUI();
+            alert("複製エラー: " + (res?.error || "不明"));
+        }
+    } catch (error) {
+        undoStack.pop();
+        updateUndoRedoUI();
+        console.error("セグメント複製エラー:", error);
     }
 }
 
