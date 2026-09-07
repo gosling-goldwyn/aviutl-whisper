@@ -61,6 +61,10 @@ DEFAULT_SETTINGS = {
 
 def _get_settings_path() -> Path:
     """設定ファイルのパスを取得する。"""
+    override = os.environ.get("AVIUTL_WHISPER_SETTINGS_PATH")
+    if override:
+        return Path(override)
+
     if platform.system() == "Windows":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
     else:
