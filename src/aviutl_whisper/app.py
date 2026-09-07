@@ -13,6 +13,8 @@ from .api import Api
 
 logger = logging.getLogger(__name__)
 
+REMOTE_DEBUGGING_PORT_ENV = "AVIUTL_WHISPER_REMOTE_DEBUGGING_PORT"
+
 # pywebview + pythonnet(WebView2) の Windows Accessibility 再帰バグ回避
 # 500 では WebView2 の正常な初期化でも RecursionError が発生する
 sys.setrecursionlimit(3000)
@@ -49,6 +51,31 @@ def get_web_dir() -> str:
     return str(web_path)
 
 
+def _configure_remote_debugging() -> None:
+    """テスト用CDPポートをWebView2のAPI設定へ反映する。"""
+    value = os.environ.get(REMOTE_DEBUGGING_PORT_ENV)
+    if value is None:
+        return
+
+    try:
+        port = int(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{REMOTE_DEBUGGING_PORT_ENV} must be an integer"
+        ) from exc
+
+    if not 1 <= port <= 65535:
+        raise ValueError(
+            f"{REMOTE_DEBUGGING_PORT_ENV} must be between 1 and 65535"
+        )
+
+    # WebView2 Runtime 150以降は昇格プロセスから渡された
+    # WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTSを無視するため、pywebviewの
+    # CoreWebView2CreationProperties経由でブラウザ引数を設定する。
+    webview.settings["REMOTE_DEBUGGING_PORT"] = port
+    logger.info("WebView2 CDPポート: %d", port)
+
+
 def main():
     """アプリケーションのエントリーポイント。"""
     logging.basicConfig(
@@ -62,6 +89,8 @@ def main():
         log.addFilter(_PywebviewErrorFilter())
 
     logger.info("aviutl-whisper を起動しています...")
+
+    _configure_remote_debugging()
 
     api = Api()
 
