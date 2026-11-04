@@ -2,7 +2,10 @@
 
 import csv
 import io
-from dataclasses import dataclass, field
+import math
+import random
+from dataclasses import dataclass, field, replace
+from fractions import Fraction
 from pathlib import Path
 
 from .transcriber import TranscriptionSegment
@@ -76,6 +79,33 @@ class ExoSettings:
     background_image: str = ""
     # 1行の最大文字数 (0で無効)
     max_chars_per_line: int = 20
+    audio_start_seconds: float = 1.5
+    bgm_start_file: str = ""
+    bgm_end_file: str = ""
+    bgm_files: list[str] = field(default_factory=list)
+    bgm_volume: float = 20.0
+    outro_seconds: float = 1.5
+    closing_jingle: str = ""
+    closing_image: str = ""
+    closing_seconds: float = 15.0
+
+    def __post_init__(self):
+        for name, minimum, maximum in (
+            ("fps", 0.01, 1000),
+            ("audio_start_seconds", 0, None),
+            ("bgm_volume", 0, 100),
+            ("outro_seconds", 0, None),
+            ("closing_seconds", 0.01, None),
+        ):
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < minimum or (
+                maximum is not None and value > maximum
+            ):
+                raise ValueError(f"{name} の値が範囲外です")
+        if not isinstance(self.bgm_files, list) or any(
+            not isinstance(path, str) or not path.strip() for path in self.bgm_files
+        ):
+            raise ValueError("BGMの曲リストが不正です")
 
     def get_speaker_color(self, index: int) -> str:
         """話者インデックスに対応する文字色 (RGB hex) を返す。"""
@@ -125,6 +155,15 @@ class ExoSettings:
             speaker_images=speaker_images,
             background_image=d.get("background_image", ""),
             max_chars_per_line=int(d.get("max_chars_per_line", 20)),
+            audio_start_seconds=float(d.get("audio_start_seconds", 1.5)),
+            bgm_start_file=d.get("bgm_start_file", ""),
+            bgm_end_file=d.get("bgm_end_file", ""),
+            bgm_files=d.get("bgm_files", []),
+            bgm_volume=float(d.get("bgm_volume", 20)),
+            outro_seconds=float(d.get("outro_seconds", 1.5)),
+            closing_jingle=d.get("closing_jingle", ""),
+            closing_image=d.get("closing_image", ""),
+            closing_seconds=float(d.get("closing_seconds", 15)),
         )
 
 
@@ -231,10 +270,10 @@ def _build_speaker_intervals(
     # 話中フレーム区間を構築
     talking_frames: list[tuple[int, int]] = []
     for seg in speaker_segs:
-        start = max(1, int(seg.start * fps))
-        end = int(seg.end * fps)
-        if end <= start:
-            end = start + 1
+        start = max(1, int(seg.start * fps) + 1)
+        end = min(total_frames, max(start, _frame_count(seg.end, fps)))
+        if start > total_frames:
+            continue
         talking_frames.append((start, end))
 
     # 重複するフレーム区間をマージ
@@ -336,9 +375,93 @@ def _encode_exo_text(text: str) -> str:
     return hex_str.ljust(4096, "0")
 
 
+def _frame_count(seconds: float, fps: float) -> int:
+    """秒数を、末尾を切り捨てないフレーム数にする。"""
+    return max(1, math.ceil(seconds * fps - 1e-9))
+
+
+def _emit_audio_object(lines, idx, file, start, end, layer, volume,
+                       fade_out=0.0, loop=False):
+    lines.extend([
+        f"[{idx}]", f"start={start}", f"end={end}", f"layer={layer}",
+        "overlay=1", "audio=1",
+        f"[{idx}.0]", "_name=音声ファイル", "再生位置=0.00",
+        "再生速度=100.0", f"ループ再生={int(loop)}", "動画ファイルと連携=0",
+        f"file={file}",
+    ])
+    effect = 1
+    if fade_out > 0:
+        lines.extend([
+            f"[{idx}.1]", "_name=音量フェード", "イン=0.00",
+            f"アウト={fade_out:.4f}",
+        ])
+        effect += 1
+    lines.extend([
+        f"[{idx}.{effect}]", "_name=標準再生", f"音量={volume:.1f}", "左右=0.0",
+    ])
+    return idx + 1
+
+
+def _bgm_playlist(settings):
+    """開始曲を一度再生し、その後は曲リストをシャッフルして繰り返す。"""
+    previous = None
+    if settings.bgm_start_file:
+        previous = settings.bgm_start_file
+        yield previous
+    tracks = list(dict.fromkeys(settings.bgm_files))
+    if not tracks and settings.bgm_start_file:
+        tracks = [settings.bgm_start_file]
+    while tracks:
+        bag = list(tracks)
+        random.shuffle(bag)
+        if len(bag) > 1 and bag[0] == previous:
+            bag[0], bag[1] = bag[1], bag[0]
+        for path in bag:
+            previous = path
+            yield path
+
+
+def _emit_bgm(lines, idx, settings, main_frames, scene_frames, layer):
+    from .audio import get_audio_duration
+
+    # 終了曲は本編終了の30秒前から。短い本編では先頭から再生する。
+    ending_start = max(0, main_frames - round(30 * settings.fps))
+    cutoff = ending_start if settings.bgm_end_file else scene_frames
+    fade_frames = min(cutoff, round(
+        (1.5 if settings.bgm_end_file else
+         (settings.outro_seconds if scene_frames > main_frames else 0)) * settings.fps
+    ))
+    cursor = 0
+    for path in _bgm_playlist(settings):
+        if cursor >= cutoff:
+            break
+        track_frames = _frame_count(get_audio_duration(path), settings.fps)
+        end = min(cutoff, cursor + track_frames)
+        # フェード中は現在の曲を保ち、曲境界で音量が戻らないようにする。
+        if end >= cutoff - fade_frames:
+            end = cutoff
+        fade = fade_frames / settings.fps if end == cutoff else 0
+        idx = _emit_audio_object(
+            lines, idx, path, cursor + 1, end, layer, settings.bgm_volume,
+            fade_out=fade, loop=end - cursor > track_frames,
+        )
+        cursor = end
+    if settings.bgm_end_file:
+        duration = get_audio_duration(settings.bgm_end_file)
+        fade = (scene_frames - main_frames) / settings.fps
+        idx = _emit_audio_object(
+            lines, idx, settings.bgm_end_file, ending_start + 1,
+            scene_frames, layer, settings.bgm_volume, fade_out=fade,
+            loop=_frame_count(duration, settings.fps) < scene_frames - ending_start,
+        )
+    return idx
+
+
 def export_exo(
     segments: list[TranscriptionSegment],
     settings: ExoSettings | None = None,
+    *,
+    audio_file: str = "",
     **kwargs,
 ) -> str:
     """AviUtl拡張編集のexo形式で出力する。
@@ -364,9 +487,10 @@ def export_exo(
         for i, spk in enumerate(speakers)
     }
 
-    # 立ち絵が設定されている話者を把握
+    # 立ち絵が設定されている話者を把握（発話のない設定スロットも表示）。
     tachie_speakers = []
-    for i, spk in enumerate(speakers):
+    for i in range(len(settings.speaker_images)):
+        spk = speakers[i] if i < len(speakers) else f"__silent_{i}"
         img = settings.get_speaker_image(i)
         if img is not None:
             tachie_speakers.append((i, spk, img))
@@ -388,9 +512,21 @@ def export_exo(
         speaker_text_layer[spk] = next_layer
         next_layer += 1
 
-    # 全体の長さ (フレーム)
+    # 本編は入力音声と字幕のうち長い方。EXOだけをオフセットし、元データは保つ。
     max_end = max(s.end for s in segments)
-    total_frames = int(max_end * settings.fps) + 1
+    source_frames = 0
+    if audio_file:
+        from .audio import get_audio_duration
+        source_frames = _frame_count(get_audio_duration(audio_file), settings.fps)
+    intro_frames = round(settings.audio_start_seconds * settings.fps)
+    body_frames = max(_frame_count(max_end, settings.fps), source_frames)
+    main_frames = intro_frames + body_frames
+    has_closing = bool(settings.closing_image or settings.closing_jingle)
+    outro_frames = round(settings.outro_seconds * settings.fps) if has_closing else 0
+    scene_frames = main_frames + outro_frames
+    closing_frames = _frame_count(settings.closing_seconds, settings.fps) if has_closing else 0
+    total_frames = scene_frames + closing_frames
+    fps_ratio = Fraction(str(settings.fps)).limit_denominator(100000)
 
     lines = []
     obj_idx = 0
@@ -399,8 +535,8 @@ def export_exo(
     lines.append("[exedit]")
     lines.append(f"width={settings.width}")
     lines.append(f"height={settings.height}")
-    lines.append(f"rate={int(settings.fps)}")
-    lines.append("scale=1")
+    lines.append(f"rate={fps_ratio.numerator}")
+    lines.append(f"scale={fps_ratio.denominator}")
     lines.append(f"length={total_frames}")
     lines.append("audio_rate=44100")
     lines.append("audio_ch=2")
@@ -409,7 +545,7 @@ def export_exo(
     if settings.background_image and bg_layer is not None:
         lines.append(f"[{obj_idx}]")
         lines.append("start=1")
-        lines.append(f"end={total_frames}")
+        lines.append(f"end={scene_frames}")
         lines.append(f"layer={bg_layer}")
         lines.append("overlay=1")
         lines.append("camera=0")
@@ -432,16 +568,20 @@ def export_exo(
     # 立ち絵画像オブジェクト
     for i, spk, img_settings in tachie_speakers:
         layer = tachie_layer[spk]
-        intervals = _build_speaker_intervals(segments, spk, settings.fps, total_frames)
+        body_intervals = _build_speaker_intervals(segments, spk, settings.fps, body_frames)
+        intervals = [(a + intro_frames, b + intro_frames, talking)
+                     for a, b, talking in body_intervals]
+        if intro_frames:
+            intervals.insert(0, (1, intro_frames, True))
+        if outro_frames:
+            intervals.append((main_frames + 1, scene_frames, True))
         obj_idx = _emit_image_objects(lines, intervals, img_settings, layer, obj_idx)
 
     # テキストオブジェクト
     for seg in segments:
         speaker = seg.speaker or "Speaker 1"
-        start_frame = max(1, int(seg.start * settings.fps))
-        end_frame = int(seg.end * settings.fps)
-        if end_frame <= start_frame:
-            end_frame = start_frame + 1
+        start_frame = intro_frames + max(1, int(seg.start * settings.fps) + 1)
+        end_frame = max(start_frame, intro_frames + _frame_count(seg.end, settings.fps))
 
         layer = speaker_text_layer[speaker]
         color = speaker_color[speaker]
@@ -493,6 +633,28 @@ def export_exo(
         lines.append("blend=0")
         obj_idx += 1
 
+    # クロージング画像は最前面。背景・立ち絵はここより前に終了させる。
+    if settings.closing_image:
+        obj_idx = _emit_image_objects(
+            lines, [(scene_frames + 1, total_frames, True)],
+            SpeakerImageSettings(file=settings.closing_image), next_layer, obj_idx,
+        )
+        next_layer += 1
+    if audio_file:
+        obj_idx = _emit_audio_object(
+            lines, obj_idx, audio_file, intro_frames + 1,
+            intro_frames + source_frames, next_layer, 100,
+        )
+        next_layer += 1
+    obj_idx = _emit_bgm(lines, obj_idx, settings, main_frames, scene_frames, next_layer)
+    next_layer += 1
+    if settings.closing_jingle:
+        from .audio import get_audio_duration
+        jingle_frames = _frame_count(get_audio_duration(settings.closing_jingle), settings.fps)
+        _emit_audio_object(
+            lines, obj_idx, settings.closing_jingle, scene_frames + 1,
+            min(total_frames, scene_frames + jingle_frames), next_layer, 100,
+        )
     return "\r\n".join(lines) + "\r\n"
 
 
@@ -510,6 +672,7 @@ def export_to_file(
     output_path: str,
     format_type: str = "text",
     exo_settings: ExoSettings | None = None,
+    audio_file: str = "",
 ) -> str:
     """指定フォーマットでファイルに出力する。
 
@@ -529,11 +692,46 @@ def export_to_file(
         path = path.with_suffix(ext)
 
     if format_type == "exo":
-        content = export_exo(segments, settings=exo_settings)
+        # 圧縮音声は解析用の一時WAVとは別に永続WAVを書き出す。
+        prepared = {}
+
+        def prepare_audio(source: str, suffix: str) -> str:
+            if not source:
+                return ""
+            audio_path = Path(source).resolve()
+            key = str(audio_path)
+            if key in prepared:
+                return prepared[key]
+            if audio_path.suffix.lower() != ".wav":
+                from pydub import AudioSegment
+
+                wav_path = path.with_name(f"{path.stem}_{suffix}.wav").resolve()
+                number = 2
+                # 既存の素材を、EXOに付随するファイルで上書きしない。
+                while wav_path.exists():
+                    wav_path = path.with_name(f"{path.stem}_{suffix}_{number}.wav").resolve()
+                    number += 1
+                AudioSegment.from_file(str(audio_path)).export(str(wav_path), format="wav")
+                audio_path = wav_path
+            prepared[key] = str(audio_path)
+            return prepared[key]
+
+        original = exo_settings or ExoSettings()
+        output_settings = replace(
+            original,
+            bgm_start_file=prepare_audio(original.bgm_start_file, "bgm_start"),
+            bgm_end_file=prepare_audio(original.bgm_end_file, "bgm_end"),
+            bgm_files=[prepare_audio(file, f"bgm_{i + 1}")
+                       for i, file in enumerate(original.bgm_files)],
+            closing_jingle=prepare_audio(original.closing_jingle, "jingle"),
+        )
+        content = export_exo(
+            segments, settings=output_settings, audio_file=prepare_audio(audio_file, "audio"),
+        )
     else:
         content = export_fn(segments)
 
     # exo は CP932 (Shift_JIS) エンコーディング
     encoding = "cp932" if format_type == "exo" else "utf-8"
-    path.write_text(content, encoding=encoding)
+    path.write_text(content, encoding=encoding, newline="")
     return str(path)

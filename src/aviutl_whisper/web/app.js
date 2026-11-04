@@ -10,6 +10,10 @@ let exoDefaults = null;
 let lastSpeakers = [];
 let currentMapping = {};
 let backgroundImage = "";
+let exoMediaFiles = {
+    bgm_start_file: "", bgm_end_file: "", bgm_files: [],
+    closing_jingle: "", closing_image: "",
+};
 let savedTtsVoiceIds = {};
 let availableTtsVoices = [];
 let availableTtsModels = [];
@@ -128,6 +132,19 @@ function initEventListeners() {
     $("#btn-fetch-tts-models").addEventListener("click", fetchTtsModels);
     $("#btn-bg-image").addEventListener("click", selectBackgroundImage);
     $("#btn-bg-image-clear").addEventListener("click", clearBackgroundImage);
+    document.querySelectorAll("[data-media-select]").forEach(button => {
+        button.addEventListener("click", () => selectExoMedia(button.dataset.mediaSelect));
+    });
+    document.querySelectorAll("[data-media-clear]").forEach(button => {
+        button.addEventListener("click", () => {
+            pushUndo();
+            exoMediaFiles[button.dataset.mediaClear] = "";
+            renderExoMediaFiles();
+            markDirty();
+            scheduleAutoSave();
+        });
+    });
+    $("#btn-bgm-add").addEventListener("click", addBgmFiles);
     $("#btn-prev-seg").addEventListener("click", () => navigatePreview(-1));
     $("#btn-next-seg").addEventListener("click", () => navigatePreview(1));
     $("#btn-seg-apply").addEventListener("click", applySegmentEdit);
@@ -702,7 +719,94 @@ function collectExoSettings() {
             scale: d.scale || 100,
         })),
         background_image: backgroundImage,
+        ...exoMediaFiles,
+        bgm_files: [...exoMediaFiles.bgm_files],
+        audio_start_seconds: readMediaNumber("exo-audio-start", 1.5),
+        bgm_volume: readMediaNumber("exo-bgm-volume", 20),
+        outro_seconds: readMediaNumber("exo-outro-seconds", 1.5),
+        closing_seconds: readMediaNumber("exo-closing-seconds", 15),
     };
+}
+
+function readMediaNumber(id, fallback) {
+    const value = $(`#${id}`).valueAsNumber;
+    return Number.isFinite(value) ? value : fallback;
+}
+
+function applyExoMediaToUI(exo = {}) {
+    exoMediaFiles = {
+        bgm_start_file: exo.bgm_start_file || "",
+        bgm_end_file: exo.bgm_end_file || "",
+        bgm_files: Array.isArray(exo.bgm_files) ? [...exo.bgm_files] : [],
+        closing_jingle: exo.closing_jingle || "",
+        closing_image: exo.closing_image || "",
+    };
+    $("#exo-audio-start").value = exo.audio_start_seconds ?? 1.5;
+    $("#exo-bgm-volume").value = exo.bgm_volume ?? 20;
+    $("#exo-outro-seconds").value = exo.outro_seconds ?? 1.5;
+    $("#exo-closing-seconds").value = exo.closing_seconds ?? 15;
+    renderExoMediaFiles();
+}
+
+function renderExoMediaFiles() {
+    document.querySelectorAll("[data-media-name]").forEach(label => {
+        const path = exoMediaFiles[label.dataset.mediaName];
+        label.textContent = path ? path.split(/[\\/]/).pop() : "未選択";
+        label.title = path || "";
+    });
+    const list = $("#bgm-file-list");
+    list.replaceChildren();
+    exoMediaFiles.bgm_files.forEach((path, index) => {
+        const row = document.createElement("div");
+        row.className = "bg-image-row";
+        const name = document.createElement("span");
+        name.className = "tachie-file-name";
+        name.textContent = path.split(/[\\/]/).pop();
+        name.title = path;
+        const remove = document.createElement("button");
+        remove.className = "btn-tachie-clear";
+        remove.textContent = "✕";
+        remove.setAttribute("aria-label", `${name.textContent}を削除`);
+        remove.addEventListener("click", () => {
+            pushUndo();
+            exoMediaFiles.bgm_files.splice(index, 1);
+            renderExoMediaFiles();
+            markDirty();
+            scheduleAutoSave();
+        });
+        row.append(name, remove);
+        list.appendChild(row);
+    });
+}
+
+async function selectExoMedia(field) {
+    try {
+        const path = field === "closing_image"
+            ? await pywebview.api.select_image_file()
+            : (await pywebview.api.select_music_files(false))?.[0];
+        if (!path) return;
+        pushUndo();
+        exoMediaFiles[field] = path;
+        renderExoMediaFiles();
+        markDirty();
+        scheduleAutoSave();
+    } catch (e) {
+        alert("ファイルの選択に失敗しました: " + e);
+    }
+}
+
+async function addBgmFiles() {
+    try {
+        const files = await pywebview.api.select_music_files(true);
+        if (!files?.length) return;
+        pushUndo();
+        exoMediaFiles.bgm_files = [...new Set([...exoMediaFiles.bgm_files, ...files])];
+        renderExoMediaFiles();
+        markDirty();
+        scheduleAutoSave();
+    } catch (e) {
+        alert("曲の追加に失敗しました: " + e);
+    }
 }
 
 // --- 背景画像選択 ---
@@ -1066,6 +1170,7 @@ window._showCloseConfirm = function() {
     );
 };
 function applyExoSettingsToUI(exo) {
+    applyExoMediaToUI(exo);
     if (exo.font) $("#exo-font").value = exo.font;
     if (exo.font_size != null) $("#exo-font-size").value = exo.font_size;
     if (exo.spacing_x != null) $("#exo-spacing-x").value = exo.spacing_x;
@@ -1294,6 +1399,7 @@ function applySettingsToUi(saved) {
     syncTtsGenerationMode();
 
     const exo = saved.exo;
+    applyExoMediaToUI(exo || {});
     if (exo) {
         if (exo.font) $("#exo-font").value = exo.font;
         if (exo.font_size != null) $("#exo-font-size").value = exo.font_size;
@@ -1377,6 +1483,8 @@ async function importSettings() {
 
 async function exportSettings() {
     try {
+        if (saveTimer) clearTimeout(saveTimer);
+        await pywebview.api.save_settings(collectAllSettings());
         const result = await pywebview.api.export_settings();
         if (!result?.success && result?.error && result.error !== "キャンセルされました") {
             alert(result.error);
@@ -1427,6 +1535,7 @@ function setupAutoSave() {
         "exo-font", "exo-font-size", "exo-spacing-x", "exo-spacing-y",
         "exo-display-speed", "exo-align", "exo-pos-x", "exo-pos-y",
         "exo-max-chars",
+        "exo-audio-start", "exo-bgm-volume", "exo-outro-seconds", "exo-closing-seconds",
     ];
     for (const id of exoInputs) {
         $(`#${id}`).addEventListener("change", () => { markDirty(); scheduleAutoSave(); schedulePreviewRedraw(); });
@@ -2850,6 +2959,8 @@ async function applySnapshot(snapshot) {
     updatePreviewNav();
     populateSegmentEditor();
     renderSegmentTable();
+    markDirty();
+    scheduleAutoSave();
 }
 
 function updateUndoRedoUI() {
@@ -2909,5 +3020,10 @@ function setupExoUndoListeners() {
     const bgSection = $("#bg-section");
     if (bgSection) {
         bgSection.addEventListener("focusin", onFocusin);
+    }
+    for (const id of ["exo-audio-section", "exo-closing-section"]) {
+        const section = $(`#${id}`);
+        section.addEventListener("focusin", onFocusin);
+        section.addEventListener("change", onChangePush);
     }
 }

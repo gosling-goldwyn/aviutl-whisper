@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 import threading
+from dataclasses import asdict
 from pathlib import Path
 
 import webview
@@ -447,6 +448,7 @@ class Api:
         self._last_result: transcriber.TranscriptionResult | None = None
         self._last_segments: list[transcriber.TranscriptionSegment] | None = None
         self._last_wav_path: str | None = None
+        self._source_audio_path: str = ""
         self._audio_mode: str = "none"
         self._silent_wav_duration_ms: int = 0
         self._last_output_format: str = "exo"
@@ -460,6 +462,8 @@ class Api:
         self._tts_cancelled = False
 
     def set_window(self, window: webview.Window):
+        # ネイティブWindowの公開属性をJS API生成時に再帰走査させない。
+        window._serializable = False
         self.window = window
 
     # --- プロジェクト状態管理 ---
@@ -557,6 +561,7 @@ class Api:
             self._last_result = result
             self._last_segments = segments
             self._audio_mode = "silence"
+            self._source_audio_path = ""
             self._last_wav_path = silent_wav_path
             self._silent_wav_duration_ms = duration_ms
 
@@ -635,7 +640,9 @@ class Api:
         self._update_progress(0.95, "結果を生成中...")
         _, _, export_fn = exporter.EXPORTERS[output_format]
         if output_format == "exo":
-            text = exporter.export_exo(segments, settings=self._exo_settings)
+            text = exporter.export_exo(
+                segments, settings=self._exo_settings, audio_file=file_path,
+            )
         else:
             text = export_fn(segments)
 
@@ -643,6 +650,7 @@ class Api:
         self._last_segments = segments
         self._last_wav_path = wav_path  # 話者サンプル再生用に保持
         self._audio_mode = "source"
+        self._source_audio_path = str(Path(file_path).resolve())
         self._silent_wav_duration_ms = 0
 
         # 話者情報を構築
@@ -748,6 +756,7 @@ class Api:
             saved_path = exporter.export_to_file(
                 segments, path, format_type,
                 exo_settings=self._exo_settings if format_type == "exo" else None,
+                audio_file=self._source_audio_path,
             )
             return {"success": True, "path": saved_path}
         return None
@@ -792,22 +801,8 @@ class Api:
         """exo設定のデフォルト値を返す。"""
         defaults = exporter.ExoSettings()
         return {
-            "font": defaults.font,
-            "font_size": defaults.font_size,
-            "spacing_x": defaults.spacing_x,
-            "spacing_y": defaults.spacing_y,
-            "display_speed": defaults.display_speed,
-            "align": defaults.align,
-            "bold": defaults.bold,
-            "italic": defaults.italic,
-            "soft_edge": defaults.soft_edge,
-            "pos_x": defaults.pos_x,
-            "pos_y": defaults.pos_y,
-            "speaker_colors": list(exporter.DEFAULT_SPEAKER_COLORS),
+            **asdict(defaults),
             "default_edge_color": exporter.DEFAULT_EDGE_COLOR,
-            "speaker_images": [],
-            "background_image": "",
-            "max_chars_per_line": 20,
         }
 
     def select_image_file(self):
@@ -823,6 +818,20 @@ class Api:
         if result and len(result) > 0:
             return result[0]
         return None
+
+    def select_music_files(self, multiple: bool = False):
+        """BGM・ジングル用の音声を選択する（入力音声の選択状態は変えない）。"""
+        result = self.window.create_file_dialog(
+            webview.FileDialog.OPEN,
+            allow_multiple=multiple,
+            file_types=(
+                "音声ファイル (*.m4a;*.mp3;*.wav;*.flac;*.ogg;*.aac;*.wma)",
+                "すべてのファイル (*.*)",
+            ),
+        )
+        if not result:
+            return []
+        return list(result) if isinstance(result, (list, tuple)) else [result]
 
     def remap_speakers(self, mapping: dict, format_type: str | None = None,
                        exo_settings: dict | None = None):
@@ -844,7 +853,9 @@ class Api:
         segments = _apply_speaker_mapping(self._last_segments, mapping)
         _, _, export_fn = exporter.EXPORTERS[fmt]
         if fmt == "exo":
-            text = exporter.export_exo(segments, settings=self._exo_settings)
+            text = exporter.export_exo(
+                segments, settings=self._exo_settings, audio_file=self._source_audio_path,
+            )
         else:
             text = export_fn(segments)
 
@@ -1462,7 +1473,7 @@ class Api:
         segments = self._last_segments
         return {
             "version": PROJECT_VERSION,
-            "source_file": project_data.get("source_file", ""),
+            "source_file": self._source_audio_path or project_data.get("source_file", ""),
             "audio_mode": self._audio_mode,
             "language": (
                 self._last_result.language if self._last_result else ""
@@ -1564,6 +1575,8 @@ class Api:
 
         source_file = data.get("source_file", "")
         audio_mode = data.get("audio_mode")
+        self._source_audio_path = source_file if audio_mode != "silence" else ""
+        self._exo_settings = exporter.ExoSettings.from_dict(data.get("exo_settings", {}))
         self._cleanup_wav()
         if audio_mode == "silence":
             self._audio_mode = "silence"
@@ -1626,7 +1639,9 @@ class Api:
         )
         fmt = self._last_output_format
         if fmt == "exo":
-            text = exporter.export_exo(segments, settings=self._exo_settings)
+            text = exporter.export_exo(
+                segments, settings=self._exo_settings, audio_file=self._source_audio_path,
+            )
         else:
             _, _, export_fn = exporter.EXPORTERS[fmt]
             text = export_fn(segments)
