@@ -1,6 +1,8 @@
 """音声前処理モジュール - m4aファイルのwav変換"""
 
 import tempfile
+import math
+from functools import lru_cache
 from pathlib import Path
 
 from pydub import AudioSegment
@@ -54,8 +56,23 @@ def convert_to_wav(
 
 def get_audio_duration(file_path: str) -> float:
     """音声ファイルの長さ（秒）を取得する。"""
-    audio = AudioSegment.from_file(file_path)
-    return len(audio) / 1000.0
+    path = Path(file_path).resolve()
+    stat = path.stat()
+    return _cached_audio_duration(str(path), stat.st_mtime_ns, stat.st_size)
+
+
+@lru_cache(maxsize=128)
+def _cached_audio_duration(file_path: str, mtime_ns: int, size: int) -> float:
+    # WAV等はヘッダーだけで取得する。曲の再出力ごとの全デコードを避ける。
+    import soundfile as sf
+
+    try:
+        duration = float(sf.info(file_path).duration)
+    except (RuntimeError, sf.LibsndfileError):
+        duration = len(AudioSegment.from_file(file_path)) / 1000.0
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(f"音声ファイルの長さを取得できません: {file_path}")
+    return duration
 
 
 def create_silent_wav(

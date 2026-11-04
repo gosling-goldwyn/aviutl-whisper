@@ -146,6 +146,73 @@
                 </div>
             </section>
 
+            <section class="card" id="exo-audio-section">
+                <h2>🎵 音声・BGM</h2>
+                <div class="settings-grid">
+                    <div class="setting-item">
+                        <label for="exo-audio-start">音声開始 (秒)</label>
+                        <input type="number" id="exo-audio-start" value="1.5" min="0" step="0.1">
+                    </div>
+                    <div class="setting-item">
+                        <label for="exo-bgm-volume">BGM音量 (%)</label>
+                        <input type="number" id="exo-bgm-volume" value="20" min="0" max="100" step="1">
+                    </div>
+                </div>
+                <div class="exo-media-field">
+                    <label>開始曲</label>
+                    <div class="bg-image-row">
+                        <button class="btn btn-tachie-select" data-media-select="bgm_start_file">曲選択</button>
+                        <span class="tachie-file-name" data-media-name="bgm_start_file">未選択</span>
+                        <button class="btn-tachie-clear" data-media-clear="bgm_start_file" aria-label="開始曲をクリア">✕</button>
+                    </div>
+                </div>
+                <div class="exo-media-field">
+                    <label>終了曲（任意・本編終了30秒前から）</label>
+                    <div class="bg-image-row">
+                        <button class="btn btn-tachie-select" data-media-select="bgm_end_file">曲選択</button>
+                        <span class="tachie-file-name" data-media-name="bgm_end_file">未選択</span>
+                        <button class="btn-tachie-clear" data-media-clear="bgm_end_file" aria-label="終了曲をクリア">✕</button>
+                    </div>
+                </div>
+                <div class="exo-media-field">
+                    <div class="bg-image-row">
+                        <label>その他の曲（ランダム再生）</label>
+                        <button id="btn-bgm-add" class="btn btn-small">曲を追加</button>
+                    </div>
+                    <div id="bgm-file-list" class="bgm-file-list"></div>
+                </div>
+            </section>
+
+            <section class="card" id="exo-closing-section">
+                <h2>🎞️ クロージング</h2>
+                <div class="exo-media-field">
+                    <label>締めのジングル（音量100%）</label>
+                    <div class="bg-image-row">
+                        <button class="btn btn-tachie-select" data-media-select="closing_jingle">音声選択</button>
+                        <span class="tachie-file-name" data-media-name="closing_jingle">未選択</span>
+                        <button class="btn-tachie-clear" data-media-clear="closing_jingle" aria-label="ジングルをクリア">✕</button>
+                    </div>
+                </div>
+                <div class="exo-media-field">
+                    <label>クロージング画像</label>
+                    <div class="bg-image-row">
+                        <button class="btn btn-tachie-select" data-media-select="closing_image">画像選択</button>
+                        <span class="tachie-file-name" data-media-name="closing_image">未選択</span>
+                        <button class="btn-tachie-clear" data-media-clear="closing_image" aria-label="クロージング画像をクリア">✕</button>
+                    </div>
+                </div>
+                <div class="settings-grid exo-media-field">
+                    <div class="setting-item">
+                        <label for="exo-outro-seconds">本編後のBGMフェード (秒)</label>
+                        <input type="number" id="exo-outro-seconds" value="1.5" min="0" step="0.1">
+                    </div>
+                    <div class="setting-item">
+                        <label for="exo-closing-seconds">画像表示 (秒)</label>
+                        <input type="number" id="exo-closing-seconds" value="15" min="0.1" step="0.1">
+                    </div>
+                </div>
+            </section>
+
             <section class="card" id="speaker-colors-section">
                 <h2>🎨 話者ごとの色設定</h2>
                 <div id="speaker-colors-list"></div>

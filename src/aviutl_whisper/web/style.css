@@ -709,6 +709,31 @@ input[type="color"] {
     border-color: var(--accent);
 }
 
+.exo-media-field {
+    margin-top: 12px;
+}
+
+.exo-media-field > label,
+.exo-media-field .bg-image-row > label {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+.exo-media-field > label {
+    display: block;
+    margin-bottom: 6px;
+}
+
+.bgm-file-list {
+    display: grid;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.bgm-file-list .bg-image-row {
+    min-width: 0;
+}
+
 /* ====== プレビューエリア ====== */
 .preview-container {
     background: #000;

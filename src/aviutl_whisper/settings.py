@@ -55,6 +55,15 @@ DEFAULT_SETTINGS = {
         "speaker_images": [],
         "background_image": "",
         "max_chars_per_line": 20,
+        "audio_start_seconds": 1.5,
+        "bgm_start_file": "",
+        "bgm_end_file": "",
+        "bgm_files": [],
+        "bgm_volume": 20.0,
+        "outro_seconds": 1.5,
+        "closing_jingle": "",
+        "closing_image": "",
+        "closing_seconds": 15.0,
     },
 }
 
