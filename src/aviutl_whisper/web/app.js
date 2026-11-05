@@ -144,6 +144,7 @@ function initEventListeners() {
             renderExoMediaFiles();
             markDirty();
             scheduleAutoSave();
+            schedulePreviewRedraw();
         });
     });
     $("#btn-bgm-add").addEventListener("click", addBgmFiles);
@@ -781,6 +782,7 @@ function renderExoMediaFiles() {
             renderExoMediaFiles();
             markDirty();
             scheduleAutoSave();
+            schedulePreviewRedraw();
         });
         row.append(name, remove);
         list.appendChild(row);
@@ -798,6 +800,7 @@ async function selectExoMedia(field) {
         renderExoMediaFiles();
         markDirty();
         scheduleAutoSave();
+        schedulePreviewRedraw();
     } catch (e) {
         alert("ファイルの選択に失敗しました: " + e);
     }
@@ -812,6 +815,7 @@ async function addBgmFiles() {
         renderExoMediaFiles();
         markDirty();
         scheduleAutoSave();
+        schedulePreviewRedraw();
     } catch (e) {
         alert("曲の追加に失敗しました: " + e);
     }
@@ -1096,6 +1100,7 @@ async function loadProject() {
         }
 
         // プロジェクト読み込み時は Undo 履歴をリセット
+        $("#preview-audio").value = 'auto';
         clearUndoHistory();
         clearDirty();
         enableSaveMenuItems();
@@ -1415,7 +1420,8 @@ function applySettingsToUi(saved) {
     syncTtsGenerationMode();
 
     const exo = saved.exo;
-    applyExoMediaToUI(exo || {});
+    // Importing application preferences must preserve the open project's media.
+    applyExoMediaToUI({ ...exo, ...collectProjectMediaSettings() });
     if (exo) {
         if (exo.font) selectSubtitleFont(exo.font);
         if (exo.font_size != null) $("#exo-font-size").value = exo.font_size;
@@ -1511,6 +1517,8 @@ async function exportSettings() {
     }
 }
 function collectAllSettings() {
+    const exo = collectExoSettings();
+    for (const key of PROJECT_MEDIA_KEYS) delete exo[key];
     return {
         model_size: $("#model-size").value,
         language: $("#language").value,
@@ -1518,7 +1526,7 @@ function collectAllSettings() {
         output_format: "exo",
         diarization_method: $("#diarization-method").value,
         hf_token: $("#hf-token").value || "",
-        exo: collectExoSettings(),
+        exo,
     };
 }
 
@@ -1586,9 +1594,21 @@ let canvasPreview = null;
 let canvasPreviewKey = "";
 let previewRequestId = 0;
 let previewTime = 0;
+let previewPlan = null;
+let previewAudioSource = 'silence';
+let previewPlayer = null;
+let previewPlaybackRequest = 0;
+
+const PROJECT_MEDIA_KEYS = ["bgm_start_file", "bgm_end_file", "bgm_files", "bgm_volume",
+    "outro_seconds", "closing_jingle", "closing_image", "closing_seconds"];
+
+function collectProjectMediaSettings() {
+    const exo = collectExoSettings();
+    return Object.fromEntries(PROJECT_MEDIA_KEYS.map(key => [key, exo[key]]));
+}
 
 async function canvasAssets(settings) {
-    const paths = [...new Set([settings.background_image, ...settings.speaker_images.map(image => image.file)].filter(Boolean))];
+    const paths = [...new Set([settings.background_image, settings.closing_image, ...settings.speaker_images.map(image => image.file)].filter(Boolean))];
     if (!paths.length) return {};
     const result = await pywebview.api.get_canvas_assets(paths);
     if (!result?.success) throw new Error(result?.error || "画像を読み込めません");
@@ -1596,6 +1616,8 @@ async function canvasAssets(settings) {
 }
 
 async function initExoPreview() {
+    await stopVideoPreview();
+    canvasPreviewKey = "";
     try {
         const mapping = Object.keys(currentMapping).length > 0 ? currentMapping : null;
         const res = await pywebview.api.get_preview_segments(mapping);
@@ -1615,44 +1637,93 @@ async function initExoPreview() {
     }
 }
 
-async function renderPreviewImage(time = previewSegments[previewIndex]?.start ?? 0) {
+async function renderPreviewImage(time) {
     const canvas = $("#preview-image");
     if (previewSegments.length === 0) return;
     const request = ++previewRequestId;
     try {
         const settings = collectExoSettings();
-        const key = JSON.stringify([settings, previewSegments]);
+        const source = $("#preview-audio").value;
+        const tts = collectTtsSettings();
+        const key = JSON.stringify([settings, previewSegments, source, tts, selectedFile]);
         if (key !== canvasPreviewKey || !canvasPreview?.ready) {
+            const options = await pywebview.api.get_video_audio_options();
+            const audioSource = source === 'auto' ? (options?.source_available ? 'source' : 'silence') : source;
+            const audio = await pywebview.api.get_video_audio(audioSource, tts, settings);
+            if (!audio?.success) throw new Error(audio?.error || "音声を準備できません");
+            const plan = await VideoTools.prepareMediaTimeline(previewSegments, settings, audio.clips, audio.media);
             const renderer = new VideoTools.CanvasRenderer({
                 canvas: document.createElement("canvas"),
                 segments: previewSegments, settings, assets: await canvasAssets(settings),
+                timing: plan.timing,
             });
             await renderer.initialize();
             if (request !== previewRequestId) { renderer.dispose(); return; }
             canvasPreview?.dispose();
             canvasPreview = renderer;
             canvasPreviewKey = key;
+            previewPlan = plan;
+            previewAudioSource = audioSource;
         }
         if (request !== previewRequestId) return;
-        canvasPreview.renderFrame(time);
-        if (canvas.width !== settings.width) canvas.width = settings.width;
-        if (canvas.height !== settings.height) canvas.height = settings.height;
-        canvas.getContext("2d").drawImage(canvasPreview.canvas, 0, 0);
-        previewTime = time;
-        const duration = VideoTools.timelineDuration(previewSegments, 0, settings.fps).duration;
-        $("#preview-time").max = Math.max(duration, time);
-        $("#preview-time").value = time;
-        $("#preview-time-label").textContent = formatTimeDetailed(time);
+        paintVideoPreview(time ?? (previewSegments[previewIndex]?.start ?? 0) + previewPlan.timing.intro);
         $("#preview-error").textContent = "";
     } catch (e) {
         if (request !== previewRequestId) return;
         canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
         $("#preview-error").textContent = String(e.message || e);
+        canvasPreviewKey = "";
+        previewPlan = null;
         console.error("プレビューレンダリングエラー:", e);
     }
 }
 
+function paintVideoPreview(time) {
+    if (!canvasPreview?.ready || !previewPlan) return;
+    const canvas = $("#preview-image"), settings = canvasPreview.settings;
+    time = Math.max(0, Math.min(time, previewPlan.timing.duration));
+    canvasPreview.renderFrame(time);
+    if (canvas.width !== settings.width) canvas.width = settings.width;
+    if (canvas.height !== settings.height) canvas.height = settings.height;
+    canvas.getContext("2d").drawImage(canvasPreview.canvas, 0, 0);
+    previewTime = time;
+    $("#preview-time").max = previewPlan.timing.duration;
+    $("#preview-time").value = time;
+    $("#preview-time-label").textContent = formatTimeDetailed(time);
+}
+
+async function stopVideoPreview() {
+    previewPlaybackRequest++;
+    const player = previewPlayer;
+    previewPlayer = null;
+    $("#btn-preview-play").textContent = "▶ 再生";
+    await player?.stop();
+}
+
+async function toggleVideoPreview() {
+    if (previewPlayer) { await stopVideoPreview(); return; }
+    const request = ++previewPlaybackRequest;
+    try {
+        await renderPreviewImage(previewTime);
+        if (request !== previewPlaybackRequest || !previewPlan) return;
+        const player = new VideoTools.PreviewPlayer(previewPlan, paintVideoPreview,
+            () => { if (previewPlayer === player) void stopVideoPreview(); },
+            error => { if (previewPlayer === player) {
+                $("#preview-error").textContent = String(error.message || error);
+                void stopVideoPreview();
+            } });
+        previewPlayer = player;
+        $("#btn-preview-play").textContent = "⏸ 停止";
+        await player.start(previewTime >= previewPlan.timing.duration ? 0 : previewTime);
+    } catch (error) {
+        if (request !== previewPlaybackRequest) return;
+        $("#preview-error").textContent = String(error.message || error);
+        await stopVideoPreview();
+    }
+}
+
 function navigatePreview(delta) {
+    void stopVideoPreview();
     const newIdx = previewIndex + delta;
     if (newIdx < 0 || newIdx >= previewSegments.length) return;
     _segTextEditStarted = false;
@@ -1700,6 +1771,7 @@ function getSpeakerIndex(speakerName) {
 }
 
 function schedulePreviewRedraw() {
+    void stopVideoPreview();
     if (previewSegments.length === 0) return;
     renderPreviewImage(previewTime);
 }
@@ -1715,7 +1787,8 @@ function initVideoExport() {
         try {
             const options = await pywebview.api.get_video_audio_options();
             $("#video-audio option[value='source']").disabled = !options.source_available;
-            $("#video-audio").value = options.source_available ? "source" : "silence";
+            const selected = $("#preview-audio").value;
+            $("#video-audio").value = selected === 'auto' ? (options.source_available ? 'source' : 'silence') : selected;
         } catch (error) { $("#video-error").textContent = String(error.message || error); }
     });
     $("#btn-close-video").addEventListener("click", async () => {
@@ -1729,7 +1802,17 @@ function initVideoExport() {
     $("#btn-video-path").addEventListener("click", chooseVideoOutput);
     $("#btn-video-start").addEventListener("click", startVideoExport);
     $("#btn-video-cancel").addEventListener("click", () => videoAbortController?.abort());
-    $("#preview-time").addEventListener("input", event => renderPreviewImage(Number(event.target.value)));
+    $("#preview-time").addEventListener("input", async event => {
+        const time = Number(event.target.value);
+        await stopVideoPreview();
+        await renderPreviewImage(time);
+    });
+    $("#btn-preview-play").addEventListener("click", toggleVideoPreview);
+    $("#preview-audio").addEventListener("change", schedulePreviewRedraw);
+    $("#video-audio").addEventListener("change", () => {
+        $("#preview-audio").value = $("#video-audio").value === 'source' ? 'auto' : $("#video-audio").value;
+        schedulePreviewRedraw();
+    });
     for (const id of ["video-width", "video-height", "video-fps"]) {
         $(`#${id}`).addEventListener("focus", () => { pendingExoSnapshot = captureSnapshot(); });
         $(`#${id}`).addEventListener("change", () => {
@@ -1776,21 +1859,28 @@ async function startVideoExport() {
     hide($("#video-result"));
     setVideoBusy(true);
     try {
+        await stopVideoPreview();
         await pywebview.api.set_video_export_active(true);
         if (!videoReservation && !await chooseVideoOutput()) return;
         reservation = videoReservation;
         controller.signal.throwIfAborted();
+        await renderPreviewImage(previewTime);
+        controller.signal.throwIfAborted();
         const settings = structuredClone(collectExoSettings());
         const segments = structuredClone(previewSegments);
         $("#video-status").textContent = "音声・画像を準備中…";
-        const audio = await pywebview.api.get_video_audio($("#video-audio").value, collectTtsSettings());
+        const source = $("#video-audio").value;
+        const plan = previewAudioSource === source ? previewPlan : null;
+        const audio = await pywebview.api.get_video_audio(source, collectTtsSettings(), settings);
         if (!audio?.success) throw new Error(audio?.error || "音声を準備できません");
         controller.signal.throwIfAborted();
         const assets = await canvasAssets(settings);
         controller.signal.throwIfAborted();
         const result = await VideoTools.exportVideo({
             bridge: pywebview.api, token: reservation.token, segments, settings, assets,
-            clips: audio.clips, signal: controller.signal,
+            clips: audio.clips, media: audio.media,
+            plan,
+            signal: controller.signal,
             onProgress: (value, message) => {
                 $("#video-progress").value = value;
                 $("#video-percent").textContent = `${Math.floor(value * 100)}%`;

@@ -68,6 +68,9 @@ def reset_app_state(page: Page) -> None:
         window.__testAlerts = [];
         clearTimeout(saveTimer);
         clearTimeout(ttsSaveTimer);
+        void stopVideoPreview();
+        previewPlan = null;
+        document.getElementById('preview-audio').value = 'auto';
         previewRequestId++;
         canvasPreview?.dispose();
         canvasPreview = null;

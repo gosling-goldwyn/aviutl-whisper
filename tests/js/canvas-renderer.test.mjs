@@ -50,9 +50,9 @@ function fixture(settings = {}, inputSegments = segments) {
     };
     const canvas = { getContext: () => ctx };
     const renderer = new CanvasRenderer({
-        canvas, segments: inputSegments, settings: { width: 320, height: 180, font_size: 20, speaker_images: [
+        canvas, segments: inputSegments, settings: { audio_start_seconds: 0, width: 320, height: 180, font_size: 20, speaker_images: [
             { file: 'a.png', x: -50 }, { file: 'b.png', x: 50 },
-        ], ...settings }, assets: { 'a.png': 'a.png', 'b.png': 'b.png' },
+        ], ...settings }, assets: { 'a.png': 'a.png', 'b.png': 'b.png', 'end.png': 'end.png' },
         imageLoader: async name => ({ name, width: 40, height: 80 }),
     });
     return { renderer, operations, ctx };
@@ -129,4 +129,28 @@ test('speaker slots match EXO sorting for sparse numbers and custom names', asyn
     operations.length = 0;
     renderer.renderFrame(2.25);
     assert.equal(operations.find(o => o.color).color, '#123456');
+});
+
+test('intro, main, outro and ending obey shared boundaries even after seeking backwards', async () => {
+    const { renderer, operations } = fixture({ audio_start_seconds: .5,
+        closing_image: 'end.png', outro_seconds: .5, closing_seconds: 1 },
+    [{ start: 0, end: 1, text: '字幕', speaker: 'Speaker 1' }]);
+    await renderer.initialize();
+    renderer.renderFrame(.25);
+    assert.equal(operations.filter(o => o.color).length, 0);
+    assert.deepEqual(operations.filter(o => o.image).map(o => o.filter), ['none', 'none']);
+    operations.length = 0;
+    renderer.renderFrame(.5);
+    assert.ok(operations.some(o => o.color));
+    operations.length = 0;
+    renderer.renderFrame(1.5);
+    assert.equal(operations.filter(o => o.color).length, 0);
+    assert.deepEqual(operations.filter(o => o.image).map(o => o.filter), ['none', 'none']);
+    operations.length = 0;
+    renderer.renderFrame(2);
+    assert.deepEqual(operations.map(o => o.image), ['end.png']);
+    operations.length = 0;
+    renderer.renderFrame(.5);
+    assert.ok(operations.some(o => o.color));
+    assert.ok(!operations.some(o => o.image === 'end.png'));
 });

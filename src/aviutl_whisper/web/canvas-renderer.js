@@ -4,6 +4,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     spacing_x: 0, spacing_y: 0, display_speed: 0, align: 4,
     bold: false, italic: false, soft_edge: true, pos_x: 0, pos_y: 0,
     max_chars_per_line: 20, speaker_images: [], background_image: '',
+    audio_start_seconds: 1.5, bgm_volume: 20, outro_seconds: 1.5,
+    closing_seconds: 15, closing_image: '', closing_jingle: '',
     speaker_colors: ['ffffff', '00ffff', '00ff00', 'ff00ff', 'ffff00', 'ff8000', '8080ff', '80ff80'],
     speaker_edge_colors: ['000000'],
 });
@@ -11,14 +13,17 @@ export const DEFAULT_SETTINGS = Object.freeze({
 export function normalizeSettings(settings = {}) {
     const s = { ...DEFAULT_SETTINGS, ...settings };
     for (const key of ['width', 'height', 'fps', 'font_size', 'spacing_x', 'spacing_y',
-        'display_speed', 'align', 'pos_x', 'pos_y', 'max_chars_per_line']) {
+        'display_speed', 'align', 'pos_x', 'pos_y', 'max_chars_per_line',
+        'audio_start_seconds', 'bgm_volume', 'outro_seconds', 'closing_seconds']) {
         if (!Number.isFinite(s[key])) throw new Error(`${key} が不正です`);
     }
     if (!Number.isInteger(s.width) || !Number.isInteger(s.height) || s.width < 2 || s.height < 2
         || s.width > 8192 || s.height > 8192 || s.fps <= 0 || s.fps > 240
         || s.font_size < 1 || s.font_size > 2048 || s.align < 0 || s.align > 8
         || !Number.isInteger(s.align) || s.display_speed < 0
-        || !Number.isInteger(s.max_chars_per_line) || s.max_chars_per_line < 0) {
+        || !Number.isInteger(s.max_chars_per_line) || s.max_chars_per_line < 0
+        || s.audio_start_seconds < 0 || s.outro_seconds < 0 || s.closing_seconds <= 0
+        || s.bgm_volume < 0 || s.bgm_volume > 100) {
         throw new Error('解像度・fps・字幕設定の値が範囲外です');
     }
     return s;
@@ -58,6 +63,18 @@ export function timelineDuration(segments, audioDuration = 0, fps = 30) {
     return { frames, duration: frames / fps, contentDuration: end };
 }
 
+export function sceneTiming(segments, audioEnd, settings) {
+    const s = normalizeSettings(settings);
+    const body = timelineDuration(segments, audioEnd, s.fps);
+    const intro = Math.round(s.audio_start_seconds * s.fps) / s.fps;
+    const mainEnd = intro + body.duration;
+    const hasClosing = Boolean(s.closing_image || s.closing_jingle);
+    const closingStart = mainEnd + (hasClosing ? Math.round(s.outro_seconds * s.fps) / s.fps : 0);
+    const duration = closingStart + (hasClosing ? Math.ceil(s.closing_seconds * s.fps - 1e-8) / s.fps : 0);
+    return { intro, mainEnd, closingStart, hasClosing, duration,
+        frames: Math.round(duration * s.fps), contentDuration: body.contentDuration };
+}
+
 function color(values, index, fallback) {
     const value = values?.length ? values[index % values.length] : fallback;
     return /^#?[0-9a-f]{6}$/i.test(value) ? `#${value.replace('#', '')}` : `#${fallback}`;
@@ -79,11 +96,12 @@ async function loadImage(url, path) {
 }
 
 export class CanvasRenderer {
-    constructor({ canvas, segments, settings, assets = {}, imageLoader = loadImage }) {
+    constructor({ canvas, segments, settings, assets = {}, imageLoader = loadImage, timing }) {
         this.canvas = canvas;
         this.settings = normalizeSettings(settings);
         this.segments = segments.map(segment => ({ ...segment }));
         timelineDuration(this.segments, 0, this.settings.fps);
+        this.timing = timing || sceneTiming(this.segments, 0, this.settings);
         // Match export_exo: mapped speaker names are sorted into setting slots.
         // Numeric suffixes can be sparse, and manually edited names are valid.
         this.speakerSlots = new Map([...new Set(this.segments.map(segment => segment.speaker || 'Speaker 1'))]
@@ -116,7 +134,7 @@ export class CanvasRenderer {
             return Math.abs(this.ctx.measureText(sample).width - base);
         });
         if (widths.every(diff => diff < 0.01)) throw new Error(`フォントが見つかりません: ${s.font}`);
-        const paths = [...new Set([s.background_image, ...s.speaker_images.map(image => image.file)].filter(Boolean))];
+        const paths = [...new Set([s.background_image, s.closing_image, ...s.speaker_images.map(image => image.file)].filter(Boolean))];
         try {
             for (const path of paths) {
                 if (!this.assets[path]) throw new Error(`画像が見つかりません: ${path}`);
@@ -129,6 +147,8 @@ export class CanvasRenderer {
     renderFrame(time) {
         if (!this.ready || !Number.isFinite(time)) throw new Error('レンダラーが未初期化、または時刻が不正です');
         const s = this.settings, ctx = this.ctx;
+        const sceneTime = time;
+        time -= this.timing.intro;
         if (time < this.time) { this.active.clear(); this.cursor = 0; }
         while (this.cursor < this.events.length && this.events[this.cursor].time <= time) {
             const event = this.events[this.cursor++];
@@ -139,6 +159,11 @@ export class CanvasRenderer {
         ctx.filter = 'none';
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, s.width, s.height);
+        if (this.timing.hasClosing && sceneTime >= this.timing.closingStart) {
+            const ending = this.images.get(s.closing_image);
+            if (ending) ctx.drawImage(ending, (s.width - ending.width) / 2, (s.height - ending.height) / 2);
+            return { segments: [], activeSpeakers: new Set() };
+        }
         const background = this.images.get(s.background_image);
         if (background) {
             const scale = Math.max(s.width / background.width, s.height / background.height);
@@ -154,7 +179,7 @@ export class CanvasRenderer {
             const x = Number(image.x ?? 0), y = Number(image.y ?? 0);
             if (![scale, x, y].every(Number.isFinite) || scale <= 0) throw new Error('立ち絵の座標・拡大率が不正です');
             const w = bitmap.width * scale, h = bitmap.height * scale;
-            ctx.filter = speakers.has(index) ? 'none' : 'grayscale(1)';
+            ctx.filter = sceneTime < this.timing.intro || sceneTime >= this.timing.mainEnd || speakers.has(index) ? 'none' : 'grayscale(1)';
             ctx.drawImage(bitmap, s.width / 2 + x - w / 2, s.height / 2 + y - h / 2, w, h);
         });
         ctx.filter = 'none';

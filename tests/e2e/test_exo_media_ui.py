@@ -27,7 +27,7 @@ def restore_media_state(page: Page):
     }""")
 
 
-def test_media_selection_and_settings_roundtrip(page: Page):
+def test_media_selection_and_settings_import_preserve_project_media(page: Page):
     page.evaluate("""() => {
         const selections = [
             ['C:/music/start.wav'], ['C:/music/end.wav'],
@@ -49,7 +49,7 @@ def test_media_selection_and_settings_roundtrip(page: Page):
     saved = page.evaluate("""async () => {
         await pywebview.api.save_settings(collectAllSettings());
         const saved = await pywebview.api.load_settings();
-        applyExoMediaToUI();
+        saved.exo.closing_image = 'C:/old-preferences/ignored.png';
         applySettingsToUi(saved);
         return collectExoSettings();
     }""")
@@ -80,7 +80,7 @@ def test_remove_and_undo_restore_tracks_and_optional_ending(page: Page):
     expect(page.locator('[data-media-name="bgm_end_file"]')).to_have_text("end.wav")
 
 
-def test_export_settings_includes_changes_before_debounced_save(page: Page):
+def test_export_settings_excludes_project_media(page: Page):
     page.evaluate("""() => {
         window.exportedMediaSettings = null;
         pywebview.api.export_settings = async () => {
@@ -91,4 +91,5 @@ def test_export_settings_includes_changes_before_debounced_save(page: Page):
     page.locator("#exo-bgm-volume").fill("37")
     page.evaluate("exportSettings()")
     page.wait_for_function("window.exportedMediaSettings !== null")
-    assert page.evaluate("window.exportedMediaSettings.bgm_volume") == 37
+    assert page.evaluate("!('bgm_volume' in window.exportedMediaSettings)")
+    assert page.locator("#exo-bgm-volume").input_value() == "37"

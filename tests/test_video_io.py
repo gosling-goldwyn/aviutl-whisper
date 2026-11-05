@@ -125,6 +125,14 @@ def test_audio_sources_and_tts_missing_data_are_explicit(tmp_path, monkeypatch):
         result = api.get_video_audio('source')
         assert result['success'] and result['clips'][0]['start'] == 0
         assert result['clips'][0]['url'].startswith('http://127.0.0.1:')
+        music = api.get_video_audio('silence', {}, {
+            'bgm_start_file': source, 'bgm_files': [source], 'closing_jingle': source,
+        })
+        assert music['success'] and music['clips'] == []
+        assert list(music['media']) == [source]
+        assert music['media'][source].startswith('http://127.0.0.1:')
+        assert not api.get_video_audio('silence', {}, {'bgm_start_file': str(tmp_path / 'missing.wav')})['success']
+        assert 'WMA' in api.get_video_audio('silence', {}, {'closing_jingle': 'jingle.wma'})['error']
         api._last_segments = [TranscriptionSegment(start=0, end=1, text='字幕', speaker='Speaker 1')]
         monkeypatch.setattr('aviutl_whisper.elevenlabs_tts.get_combined_audio_items', lambda *args: ([], [{'segment_indices': [0]}]))
         assert '不足' in api.get_video_audio('tts', {})['error']

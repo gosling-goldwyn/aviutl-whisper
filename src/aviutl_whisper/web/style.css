@@ -754,7 +754,8 @@ input[type="color"] {
     object-fit: contain;
 }
 
-.preview-seek { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.preview-seek { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
+.preview-seek select { max-width: 150px; }
 .preview-seek input { flex: 1; min-width: 0; }
 .preview-seek output { font-variant-numeric: tabular-nums; font-size: 12px; }
 .video-error { color: #ff8e8e; white-space: pre-wrap; overflow-wrap: anywhere; }

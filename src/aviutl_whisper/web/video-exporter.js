@@ -3,7 +3,8 @@ import {
     AudioSample, AudioSampleSink, Input, UrlSource, ALL_FORMATS, Quality,
     canEncodeVideo, canEncodeAudio,
 } from 'mediabunny';
-import { CanvasRenderer, normalizeSettings, timelineDuration } from './canvas-renderer.js';
+import { CanvasRenderer, normalizeSettings } from './canvas-renderer.js';
+import { buildMediaTimeline, clipGain } from './media-timeline.js';
 
 const RATE = 48000;
 const CHANNELS = 2;
@@ -63,24 +64,41 @@ export async function inspectAudio(clips, signal) {
     return result.sort((a, b) => a.start - b.start);
 }
 
+export async function prepareMediaTimeline(segments, settings, clips = [], media = {}, signal) {
+    const speech = await inspectAudio(clips, signal);
+    const music = {};
+    for (const [path, url] of Object.entries(media)) {
+        check(signal);
+        try { [music[path]] = await inspectAudio([{ url, start: 0 }], signal); }
+        catch (error) {
+            check(signal);
+            throw new Error(`${path}: ${error.message || error}`);
+        }
+    }
+    return buildMediaTimeline(segments, settings, speech, music);
+}
+
 // Streams decoded samples into fixed-size stereo PCM blocks. Inputs are opened only
 // while audible and disposed at EOF. Memory depends on simultaneous clips, not length.
 export class AudioMixer {
-    constructor(clips, signal) {
+    constructor(clips, signal, startTime = 0) {
         this.clips = clips;
         this.signal = signal;
         this.cursor = 0;
         this.active = new Set();
         this.disposed = false;
+        this.startTime = startTime;
     }
 
     async open(clip) {
-        if (this.active.size >= 32) throw new Error('同時に重なるTTS音声が32件を超えています');
+        if (this.active.size >= 32) throw new Error('同時に重なる音声が32件を超えています');
         const input = openInput(clip.url);
         const state = { clip, input, iterator: null, sample: null, planes: null };
         this.active.add(state);
         const track = await input.getPrimaryAudioTrack();
-        state.iterator = new AudioSampleSink(track).samples();
+        const from = Math.max(0, this.startTime - clip.start);
+        state.iterator = new AudioSampleSink(track).samples(clip.origin + from,
+            clip.origin + (clip.end - clip.start));
         await this.next(state);
         return state;
     }
@@ -104,7 +122,7 @@ export class AudioMixer {
         }
         state.sample = value.value;
         state.start = state.clip.start + state.sample.timestamp - state.clip.origin;
-        state.end = state.start + state.sample.duration;
+        state.end = Math.min(state.clip.end, state.start + state.sample.duration);
         state.planes = Array.from({ length: Math.min(2, state.sample.numberOfChannels) }, (_, channel) => {
             const plane = new Float32Array(state.sample.numberOfFrames);
             state.sample.copyTo(plane, { planeIndex: channel, format: 'f32-planar' });
@@ -118,7 +136,8 @@ export class AudioMixer {
         const start = offset / RATE, end = (offset + count) / RATE;
         const data = new Float32Array(count * CHANNELS);
         while (this.cursor < this.clips.length && this.clips[this.cursor].start < end) {
-            await this.open(this.clips[this.cursor++]);
+            const clip = this.clips[this.cursor++];
+            if (clip.end > start) await this.open(clip);
         }
         for (const state of [...this.active]) {
             while (state.sample && state.start < end) {
@@ -132,7 +151,8 @@ export class AudioMixer {
                     const fraction = position - Math.floor(position);
                     for (let channel = 0; channel < CHANNELS; channel++) {
                         const plane = state.planes[Math.min(channel, state.planes.length - 1)];
-                        data[channel * count + i] += plane[left] + (plane[right] - plane[left]) * fraction;
+                        data[channel * count + i] += (plane[left] + (plane[right] - plane[left]) * fraction)
+                            * clipGain(state.clip, start + i / RATE);
                     }
                 }
                 if (state.end <= end + 1e-9) await this.next(state); else break;
@@ -174,7 +194,8 @@ export function bridgeWritable(bridge, token, signal, stats) {
     }, { highWaterMark: 1 });
 }
 
-export async function exportVideo({ bridge, token, segments, settings, assets, clips = [], signal, onProgress = () => {} }) {
+export async function exportVideo({ bridge, token, segments, settings, assets, clips = [], media = {}, plan,
+    signal, onProgress = () => {} }) {
     let output, mixer, renderer, committed = false, cancellation;
     const stats = { bytes: 0, maxChunk: 0, frames: 0 };
     const abort = () => {
@@ -186,17 +207,15 @@ export async function exportVideo({ bridge, token, segments, settings, assets, c
     try {
         check(signal);
         onProgress(0, 'WebCodecsを確認中…');
-        const config = await checkCapabilities(settings, clips.length > 0);
+        const prepared = plan || await prepareMediaTimeline(segments, settings, clips, media, signal);
+        const { clips: audio, timing } = prepared;
+        const config = await checkCapabilities(settings, audio.length > 0);
         check(signal);
         onProgress(0, '画像・フォントを読み込み中…');
-        renderer = new CanvasRenderer({ canvas: document.createElement('canvas'), segments, settings, assets });
+        renderer = new CanvasRenderer({ canvas: document.createElement('canvas'), segments, settings, assets, timing });
         await renderer.initialize();
         check(signal);
-        onProgress(0, '音声を確認中…');
-        const audio = await inspectAudio(clips, signal);
-        const audioEnd = audio.reduce((end, clip) => Math.max(end, clip.start + clip.duration), 0);
         const s = renderer.settings;
-        const timing = timelineDuration(segments, audioEnd, s.fps);
         requireSuccess(await bridge.begin_video_output(token));
         check(signal);
         // Fragmented MP4 bounds muxer memory and is strictly append-only.

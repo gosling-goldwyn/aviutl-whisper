@@ -489,12 +489,13 @@ class Api:
             "source_available": self._audio_mode == "source" and Path(self._source_audio_path).is_file(),
         }
 
-    def get_video_audio(self, source: str, tts_settings: dict | None = None):
+    def get_video_audio(self, source: str, tts_settings: dict | None = None,
+                        media_settings: dict | None = None):
         """Describe existing audio; never invoke TTS generation or load whole PCM."""
         try:
             if source == "silence":
-                return {"success": True, "clips": []}
-            if source == "source":
+                items = []
+            elif source == "source":
                 if self._audio_mode != "source" or not self._source_audio_path:
                     raise ValueError("元音声がありません。音声ソースを選択し直してください")
                 items = [{"audio_path": self._source_audio_path, "start": 0.0}]
@@ -521,7 +522,19 @@ class Api:
                     "url": self._video_io.media_url(path),
                     "start": item["start"],
                 })
-            return {"success": True, "clips": clips}
+            media = {}
+            if media_settings is not None:
+                config = exporter.ExoSettings.from_dict(media_settings)
+                for path in dict.fromkeys([
+                    config.bgm_start_file, *config.bgm_files,
+                    config.bgm_end_file, config.closing_jingle,
+                ]):
+                    if not path:
+                        continue
+                    if Path(path).suffix.lower() == ".wma":
+                        raise ValueError(f"WMAはWAVに変換して選択し直してください: {path}")
+                    media[path] = self._video_io.media_url(path)
+            return {"success": True, "clips": clips, "media": media}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 

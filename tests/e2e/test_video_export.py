@@ -75,6 +75,7 @@ def video_environment(_pw, japanese_font_css):
         ImageDraw.Draw(image).rounded_rectangle((0, 0, 219, 359), 35, fill=(*color, 255))
         image.save(directory / name)
     settings = {
+        'audio_start_seconds': 0,
         'width': 1920, 'height': 1080, 'fps': 30, 'font': TEST_FONT, 'font_size': 54,
         'max_chars_per_line': 8, 'align': 4, 'pos_y': 300,
         'background_image': str(background),
@@ -151,6 +152,7 @@ def export_ui(context, name, source):
     output = context['directory'] / name
     context['control'].write_text(json.dumps({'save': str(output), 'open': str(context['project'])}), encoding='utf-8')
     page = context['page']
+    page.evaluate("document.querySelector('#video-modal').classList.add('hidden')")
     page.locator('#btn-export-video').click()
     page.wait_for_function("document.querySelector('#video-audio').value === 'source'")
     page.locator('#video-audio').select_option(source)
@@ -320,6 +322,105 @@ def test_encoder_runtime_failure_reports_error_and_cleans_output(video_page):
         page.evaluate('() => { window.VideoEncoder = window.__savedVideoEncoder; }')
 
 
+def test_bgm_closing_preview_export_and_project_roundtrip(video_page):
+    context, page = video_page, video_page['page']
+    directory = context['directory']
+    music = {}
+    for name, frequency, seconds in [('opening', 220, .6), ('one', 660, .4),
+                                     ('two', 880, .7), ('ending', 1100, .8), ('jingle', 1320, 2)]:
+        path = directory / f'{name}.wav'
+        with wave.open(str(path), 'wb') as stream:
+            stream.setparams((1, 2, 48000, 0, 'NONE', 'not compressed'))
+            samples = np.sin(2 * np.pi * frequency * np.arange(round(seconds * 48000)) / 48000) * .3
+            stream.writeframes((samples * 32767).astype('<i2').tobytes())
+        music[name] = str(path)
+    closing = directory / 'closing.png'
+    Image.new('RGB', (640, 360), (230, 180, 30)).save(closing)
+    config = {**context['settings'], 'width': 640, 'height': 360, 'font_size': 24,
+              'speaker_images': [], 'pos_y': 0, 'audio_start_seconds': .5,
+              'bgm_start_file': music['opening'], 'bgm_files': [music['one'], music['two']],
+              'bgm_volume': 25, 'closing_image': str(closing), 'closing_jingle': music['jingle'],
+              'outro_seconds': .5, 'closing_seconds': 1}
+    page.evaluate('async config => { applyExoSettingsToUI(config); await initExoPreview(); }', config)
+    timing = page.evaluate('previewPlan.timing')
+    assert (timing['mainEnd'], timing['closingStart'], timing['duration']) == (3.5, 4, 5)
+    output = export_ui(context, 'with-bgm-closing.mp4', 'source')
+    assert abs(float(probe(output)['format']['duration']) - 5) < .06
+    pixels = frame(output, 4.2)
+    assert np.max(np.abs(np.asarray(pixels).astype(float) - [230, 180, 30])) < 5
+    preview_url = page.evaluate('async () => { await renderPreviewImage(4.2); return document.querySelector("#preview-image").toDataURL(); }')
+    from io import BytesIO
+    preview = Image.open(BytesIO(base64.b64decode(preview_url.split(',')[1]))).convert('RGB')
+    assert np.array(ImageChops.difference(preview, pixels)).mean() < 2
+    pcm = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(output), '-vn', '-f', 'f32le', '-af', 'pan=mono|c0=c0', '-ar', '48000', '-'])
+    decoded = np.frombuffer(pcm, dtype='<f4')
+
+    def amplitude(samples, frequency, rate=48000):
+        t = np.arange(len(samples)) / rate
+        return float(2 * abs(np.sum(samples * np.exp(-2j * np.pi * frequency * t))) / len(samples))
+
+    # BGM starts before speech and follows the 25% volume. Speech's original
+    # .4s pulse is shifted by the .5s intro. Jingle runs at 100% after the fade.
+    assert .06 < amplitude(decoded[4800:14400], 220) < .09
+    assert amplitude(decoded[4800:14400], 440) < .01
+    assert amplitude(decoded[48000:57600], 440) > .3
+    assert amplitude(decoded[201600:220800], 1320) > .27
+    assert amplitude(decoded[201600:220800], 440) < .01
+    rms = lambda begin, end: float(np.sqrt(np.mean(decoded[round(begin * 48000):round(end * 48000)] ** 2)))
+    assert rms(3.6, 3.7) > 3 * rms(3.91, 3.98)
+    preview_pcm = page.evaluate('''async () => {
+        await renderPreviewImage(.1);
+        await toggleVideoPreview();
+        const player = previewPlayer;
+        const samples = Array.from([...player.sources][0].buffer.getChannelData(0));
+        const state = player.context.state;
+        await stopVideoPreview();
+        return { samples, state, stopped: previewPlayer === null };
+    }''')
+    assert preview_pcm['state'] == 'running' and preview_pcm['stopped']
+    assert .07 < amplitude(np.array(preview_pcm['samples']), 220) < .08
+    ending_pcm = page.evaluate('''async () => {
+        await renderPreviewImage(4.1);
+        await toggleVideoPreview();
+        const samples = Array.from([...previewPlayer.sources][0].buffer.getChannelData(0));
+        await stopVideoPreview();
+        return samples;
+    }''')
+    assert amplitude(np.array(ending_pcm), 1320) > .29
+    assert not page.locator('#preview-error').inner_text()
+    # Native-dialog-backed .awproj save/load restores every production media
+    # field; importing preferences in between must not overwrite those values.
+    saved = directory / 'media-roundtrip.awproj'
+    context['control'].write_text(json.dumps({'save': str(saved), 'open': str(context['project'])}), encoding='utf-8')
+    page.evaluate('''async () => {
+        const alert = window.alert; window.alert = () => {};
+        try { await saveProjectAs(); } finally { window.alert = alert; }
+    }''')
+    assert json.loads(saved.read_text(encoding='utf-8'))['exo_settings']['closing_image'] == str(closing)
+    context['control'].write_text(json.dumps({'save': str(saved), 'open': str(saved)}), encoding='utf-8')
+    page.evaluate('async () => { applyExoMediaToUI(); clearDirty(); await loadProject(); }')
+    restored = page.evaluate('collectExoSettings()')
+    for key in ['bgm_start_file', 'bgm_files', 'bgm_volume', 'closing_image', 'closing_jingle', 'outro_seconds', 'closing_seconds']:
+        assert restored[key] == config[key]
+    page.evaluate("applySettingsToUi({exo:{closing_image:'ignored.png',bgm_volume:99}})")
+    assert page.evaluate('collectProjectMediaSettings()') == {key: restored[key] for key in [
+        'bgm_start_file', 'bgm_end_file', 'bgm_files', 'bgm_volume', 'outro_seconds',
+        'closing_jingle', 'closing_image', 'closing_seconds']}
+    preferences = page.evaluate('''async () => {
+        await pywebview.api.save_settings(collectAllSettings());
+        return await pywebview.api.load_settings();
+    }''')
+    assert 'closing_image' not in preferences['exo'] and 'bgm_files' not in preferences['exo']
+    # A selected ending song replaces the ordinary playlist from max(0, main-30).
+    page.evaluate('async path => { exoMediaFiles.bgm_end_file = path; await renderPreviewImage(.1); }', music['ending'])
+    output = export_ui(context, 'with-ending-song.mp4', 'silence')
+    pcm = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(output), '-vn', '-f', 'f32le', '-af', 'pan=mono|c0=c0', '-ar', '48000', '-'])
+    samples = np.frombuffer(pcm, dtype='<f4')
+    assert amplitude(samples[4800:14400], 1100) > .06
+    assert amplitude(samples[4800:14400], 220) < .01
+    context['control'].write_text(json.dumps({'save': str(output), 'open': str(context['project'])}), encoding='utf-8')
+
+
 @pytest.mark.slow
 def test_ten_minute_audio_video_memory_is_bounded(video_page):
     context, page = video_page, video_page['page']
@@ -330,7 +431,7 @@ def test_ten_minute_audio_video_memory_is_bounded(video_page):
     project.write_text(json.dumps({
         'version': 1, 'source_file': str(audio),
         'segments': [{'start': 0, 'end': 600, 'text': '10分間の計測', 'speaker': 'Speaker 1'}],
-        'exo_settings': {'font': TEST_FONT, 'width': 160, 'height': 90, 'fps': 30, 'font_size': 14, 'max_chars_per_line': 10, 'speaker_images': []},
+        'exo_settings': {'audio_start_seconds': 0, 'font': TEST_FONT, 'width': 160, 'height': 90, 'fps': 30, 'font_size': 14, 'max_chars_per_line': 10, 'speaker_images': []},
     }), encoding='utf-8')
     context['control'].write_text(json.dumps({'save': str(output), 'open': str(project)}), encoding='utf-8')
     page.evaluate('async () => { clearDirty(); await loadProject(); }')
