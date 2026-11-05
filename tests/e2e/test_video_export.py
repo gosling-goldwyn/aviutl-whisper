@@ -2,6 +2,7 @@
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -14,6 +15,7 @@ import pytest
 from PIL import Image, ImageChops, ImageDraw
 
 from aviutl_whisper import elevenlabs_tts
+from aviutl_whisper.video_io import VideoIO
 from tests.e2e.conftest import PROJECT_ROOT, _stop_process
 
 pytestmark = pytest.mark.e2e
@@ -23,6 +25,26 @@ SEGMENTS = [
     {'start': 0.5, 'end': 1.5, 'text': '重複する発話', 'speaker': 'Speaker 2'},
     {'start': 2, 'end': 2.5, 'text': '最後の字幕', 'speaker': 'Speaker 1'},
 ]
+TEST_FONT = 'Noto Sans JP'
+
+
+@pytest.fixture(scope='module')
+def japanese_font_css():
+    """Serve the lockfile-pinned test font without depending on Windows fonts."""
+    package = PROJECT_ROOT / 'node_modules' / '@fontsource' / 'noto-sans-jp'
+    stylesheet = package / '400.css'
+    if not stylesheet.is_file():
+        pytest.fail('MP4 E2E用フォントがありません。先に npm ci を実行してください')
+    font_io = VideoIO()
+    try:
+        css = re.sub(
+            r'url\(([^)]+)\)',
+            lambda match: f'url("{font_io.media_url(str(package / match[1]))}")',
+            stylesheet.read_text(encoding='utf-8'),
+        )
+        yield css
+    finally:
+        font_io.close()
 
 
 def write_wav(path, seconds, rate=16000, frequency=440):
@@ -39,7 +61,7 @@ def write_wav(path, seconds, rate=16000, frequency=440):
 
 
 @pytest.fixture(scope='module')
-def video_environment(_pw):
+def video_environment(_pw, japanese_font_css):
     if not shutil.which('ffprobe') or not shutil.which('ffmpeg'):
         pytest.skip('ffprobe and ffmpeg are required for actual media verification')
     directory = PROJECT_ROOT / 'test-results' / 'video'
@@ -53,7 +75,7 @@ def video_environment(_pw):
         ImageDraw.Draw(image).rounded_rectangle((0, 0, 219, 359), 35, fill=(*color, 255))
         image.save(directory / name)
     settings = {
-        'width': 1920, 'height': 1080, 'fps': 30, 'font': 'Meiryo', 'font_size': 54,
+        'width': 1920, 'height': 1080, 'fps': 30, 'font': TEST_FONT, 'font_size': 54,
         'max_chars_per_line': 8, 'align': 4, 'pos_y': 300,
         'background_image': str(background),
         'speaker_images': [
@@ -92,6 +114,13 @@ def video_environment(_pw):
             browser = _pw.chromium.connect_over_cdp(f'http://localhost:{PORT}')
             page = browser.contexts[0].pages[0]
             page.wait_for_function('window.__aviutlWhisperReady === true', timeout=60000)
+            page.add_style_tag(content=japanese_font_css)
+            # Load every Unicode subset before measuring or drawing any text.
+            page.evaluate('''async family => {
+                const faces = [...document.fonts].filter(face => face.family.replace(/["']/g, '') === family);
+                if (!faces.length) throw new Error('Test font faces were not registered');
+                await Promise.all(faces.map(face => face.load()));
+            }''', TEST_FONT)
             yield {'page': page, 'directory': directory, 'control': control, 'project': project,
                    'settings': settings, 'browser': browser}
             browser.close()
@@ -105,7 +134,16 @@ def video_page(video_environment):
     page = context['page']
     page.evaluate("document.querySelector('#video-modal').classList.add('hidden')")
     page.evaluate('async () => { clearDirty(); await loadProject(); }')
-    page.wait_for_function('canvasPreview?.ready === true')
+    diagnostics = page.evaluate('''() => ({
+        ready: canvasPreview?.ready === true,
+        error: document.querySelector('#preview-error').textContent,
+        font: document.querySelector('#exo-font').value,
+        segments: previewSegments.length,
+    })''')
+    (context['directory'] / 'preview-diagnostics.json').write_text(
+        json.dumps(diagnostics, ensure_ascii=False, indent=2), encoding='utf-8',
+    )
+    assert diagnostics['ready'] and not diagnostics['error'], diagnostics
     return context
 
 
@@ -242,11 +280,11 @@ def test_missing_fonts_images_and_tts_are_visible(video_page):
     context, page = video_page, video_page['page']
     page.evaluate("async () => { document.querySelector('#exo-font').add(new Option('missing-font-xyz', 'missing-font-xyz')); document.querySelector('#exo-font').value = 'missing-font-xyz'; await renderPreviewImage(); }")
     assert 'フォント' in page.locator('#preview-error').inner_text()
-    page.evaluate('''async () => {
-        document.querySelector('#exo-font').value='Meiryo';
+    page.evaluate('''async family => {
+        document.querySelector('#exo-font').value=family;
         backgroundImage = 'C:/nonexistent/missing-image.png';
         await renderPreviewImage();
-    }''')
+    }''', TEST_FONT)
     assert page.locator('#preview-error').inner_text()
     page.evaluate("backgroundImage = ''; document.querySelector('#tts-output-dir').value = 'C:/nonexistent/tts'")
     page.locator('#btn-export-video').click()
@@ -292,7 +330,7 @@ def test_ten_minute_audio_video_memory_is_bounded(video_page):
     project.write_text(json.dumps({
         'version': 1, 'source_file': str(audio),
         'segments': [{'start': 0, 'end': 600, 'text': '10分間の計測', 'speaker': 'Speaker 1'}],
-        'exo_settings': {'font': 'Meiryo', 'width': 160, 'height': 90, 'fps': 30, 'font_size': 14, 'max_chars_per_line': 10, 'speaker_images': []},
+        'exo_settings': {'font': TEST_FONT, 'width': 160, 'height': 90, 'fps': 30, 'font_size': 14, 'max_chars_per_line': 10, 'speaker_images': []},
     }), encoding='utf-8')
     context['control'].write_text(json.dumps({'save': str(output), 'open': str(project)}), encoding='utf-8')
     page.evaluate('async () => { clearDirty(); await loadProject(); }')

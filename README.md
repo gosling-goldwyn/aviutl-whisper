@@ -112,6 +112,7 @@ Hugging FaceトークンはWindowsではDPAPIで暗号化されます。レイ�
 uv run pytest tests/test_backend.py -q
 
 # Windows + WebView2が必要なE2Eテスト
+npm ci  # MP4 E2E用の日本語フォントを準備
 uv run pytest tests/e2e -m "not slow" -v
 ```
 
