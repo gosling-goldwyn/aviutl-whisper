@@ -62,6 +62,7 @@ function enableSaveMenuItems() {
 function setTtsAvailability(enabled) {
     $("#btn-open-tts").disabled = !enabled;
     $("#menu-open-tts").disabled = !enabled;
+    $("#btn-export-video").disabled = !enabled;
 }
 
 // --- Undo/Redo ---
@@ -115,6 +116,7 @@ function initEventListeners() {
     $("#btn-start").addEventListener("click", startTranscription);
     $("#btn-cancel").addEventListener("click", cancelTranscription);
     $("#btn-save").addEventListener("click", saveResult);
+    initVideoExport();
     $("#btn-open-tts").addEventListener("click", openTtsModal);
     $("#btn-close-tts").addEventListener("click", closeTtsModal);
     $("#btn-select-tts-dir").addEventListener("click", selectTtsOutputDir);
@@ -698,6 +700,9 @@ function collectExoSettings() {
     });
 
     return {
+        width: $("#video-width").valueAsNumber,
+        height: $("#video-height").valueAsNumber,
+        fps: $("#video-fps").valueAsNumber,
         font: $("#exo-font").value,
         font_size: parseInt($("#exo-font-size").value) || 34,
         spacing_x: parseInt($("#exo-spacing-x").value) || 0,
@@ -734,6 +739,9 @@ function readMediaNumber(id, fallback) {
 }
 
 function applyExoMediaToUI(exo = {}) {
+    $("#video-width").value = exo.width ?? 1920;
+    $("#video-height").value = exo.height ?? 1080;
+    $("#video-fps").value = exo.fps ?? 30;
     exoMediaFiles = {
         bgm_start_file: exo.bgm_start_file || "",
         bgm_end_file: exo.bgm_end_file || "",
@@ -1171,7 +1179,7 @@ window._showCloseConfirm = function() {
 };
 function applyExoSettingsToUI(exo) {
     applyExoMediaToUI(exo);
-    if (exo.font) $("#exo-font").value = exo.font;
+    if (exo.font) selectSubtitleFont(exo.font);
     if (exo.font_size != null) $("#exo-font-size").value = exo.font_size;
     if (exo.spacing_x != null) $("#exo-spacing-x").value = exo.spacing_x;
     if (exo.spacing_y != null) $("#exo-spacing-y").value = exo.spacing_y;
@@ -1194,7 +1202,7 @@ function applyExoSettingsToUI(exo) {
     }
     renderSpeakerColors();
 
-    if (exo.speaker_images?.length > 0) {
+    if (Array.isArray(exo.speaker_images)) {
         tachieData = exo.speaker_images.map(img => ({
             file: img.file || "",
             x: img.x || 0,
@@ -1222,6 +1230,14 @@ function applyExoSettingsToUI(exo) {
             }
         });
     }
+}
+
+function selectSubtitleFont(value) {
+    // Older versions listed a whole Windows TTC collection as one font name.
+    const family = value.split("&")[0].trim();
+    const select = $("#exo-font");
+    if (![...select.options].some(option => option.value === family)) select.add(new Option(family, family));
+    select.value = family;
 }
 
 // --- 話者マッピング ---
@@ -1401,7 +1417,7 @@ function applySettingsToUi(saved) {
     const exo = saved.exo;
     applyExoMediaToUI(exo || {});
     if (exo) {
-        if (exo.font) $("#exo-font").value = exo.font;
+        if (exo.font) selectSubtitleFont(exo.font);
         if (exo.font_size != null) $("#exo-font-size").value = exo.font_size;
         if (exo.spacing_x != null) $("#exo-spacing-x").value = exo.spacing_x;
         if (exo.spacing_y != null) $("#exo-spacing-y").value = exo.spacing_y;
@@ -1566,6 +1582,18 @@ function formatBytes(bytes) {
 
 let previewSegments = [];
 let previewIndex = 0;
+let canvasPreview = null;
+let canvasPreviewKey = "";
+let previewRequestId = 0;
+let previewTime = 0;
+
+async function canvasAssets(settings) {
+    const paths = [...new Set([settings.background_image, ...settings.speaker_images.map(image => image.file)].filter(Boolean))];
+    if (!paths.length) return {};
+    const result = await pywebview.api.get_canvas_assets(paths);
+    if (!result?.success) throw new Error(result?.error || "画像を読み込めません");
+    return result.assets;
+}
 
 async function initExoPreview() {
     try {
@@ -1587,17 +1615,39 @@ async function initExoPreview() {
     }
 }
 
-async function renderPreviewImage() {
-    const img = $("#preview-image");
+async function renderPreviewImage(time = previewSegments[previewIndex]?.start ?? 0) {
+    const canvas = $("#preview-image");
     if (previewSegments.length === 0) return;
-
+    const request = ++previewRequestId;
     try {
         const settings = collectExoSettings();
-        const res = await pywebview.api.render_preview_frame(previewIndex, settings);
-        if (res && res.success) {
-            img.src = res.data_url;
+        const key = JSON.stringify([settings, previewSegments]);
+        if (key !== canvasPreviewKey || !canvasPreview?.ready) {
+            const renderer = new VideoTools.CanvasRenderer({
+                canvas: document.createElement("canvas"),
+                segments: previewSegments, settings, assets: await canvasAssets(settings),
+            });
+            await renderer.initialize();
+            if (request !== previewRequestId) { renderer.dispose(); return; }
+            canvasPreview?.dispose();
+            canvasPreview = renderer;
+            canvasPreviewKey = key;
         }
+        if (request !== previewRequestId) return;
+        canvasPreview.renderFrame(time);
+        if (canvas.width !== settings.width) canvas.width = settings.width;
+        if (canvas.height !== settings.height) canvas.height = settings.height;
+        canvas.getContext("2d").drawImage(canvasPreview.canvas, 0, 0);
+        previewTime = time;
+        const duration = VideoTools.timelineDuration(previewSegments, 0, settings.fps).duration;
+        $("#preview-time").max = Math.max(duration, time);
+        $("#preview-time").value = time;
+        $("#preview-time-label").textContent = formatTimeDetailed(time);
+        $("#preview-error").textContent = "";
     } catch (e) {
+        if (request !== previewRequestId) return;
+        canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+        $("#preview-error").textContent = String(e.message || e);
         console.error("プレビューレンダリングエラー:", e);
     }
 }
@@ -1651,8 +1701,132 @@ function getSpeakerIndex(speakerName) {
 
 function schedulePreviewRedraw() {
     if (previewSegments.length === 0) return;
-    renderPreviewImage();
+    renderPreviewImage(previewTime);
 }
+
+// MP4 uses a snapshot: editing never mutates a running export.
+let videoReservation = null;
+let videoAbortController = null;
+
+function initVideoExport() {
+    $("#btn-export-video").addEventListener("click", async () => {
+        $("#video-error").textContent = "";
+        show($("#video-modal"));
+        try {
+            const options = await pywebview.api.get_video_audio_options();
+            $("#video-audio option[value='source']").disabled = !options.source_available;
+            $("#video-audio").value = options.source_available ? "source" : "silence";
+        } catch (error) { $("#video-error").textContent = String(error.message || error); }
+    });
+    $("#btn-close-video").addEventListener("click", async () => {
+        if (videoAbortController) return;
+        if (videoReservation) await pywebview.api.abort_video_output(videoReservation.token);
+        videoReservation = null;
+        $("#video-path").value = "";
+        $("#video-result").pause();
+        hide($("#video-modal"));
+    });
+    $("#btn-video-path").addEventListener("click", chooseVideoOutput);
+    $("#btn-video-start").addEventListener("click", startVideoExport);
+    $("#btn-video-cancel").addEventListener("click", () => videoAbortController?.abort());
+    $("#preview-time").addEventListener("input", event => renderPreviewImage(Number(event.target.value)));
+    for (const id of ["video-width", "video-height", "video-fps"]) {
+        $(`#${id}`).addEventListener("focus", () => { pendingExoSnapshot = captureSnapshot(); });
+        $(`#${id}`).addEventListener("change", () => {
+            if (pendingExoSnapshot) {
+                undoStack.push(pendingExoSnapshot);
+                if (undoStack.length > MAX_UNDO) undoStack.shift();
+                redoStack = [];
+                pendingExoSnapshot = null;
+                updateUndoRedoUI();
+            }
+            markDirty();
+            scheduleAutoSave();
+            schedulePreviewRedraw();
+        });
+    }
+}
+
+async function chooseVideoOutput() {
+    try {
+        const result = await pywebview.api.select_video_output();
+        if (result?.cancelled) return false;
+        if (!result?.success) throw new Error(result?.error || "出力先を選択できません");
+        videoReservation = result;
+        $("#video-path").value = result.path;
+        $("#video-error").textContent = "";
+        return true;
+    } catch (error) {
+        $("#video-error").textContent = String(error.message || error);
+        return false;
+    }
+}
+
+async function startVideoExport() {
+    if (videoAbortController || !previewSegments.length) return;
+    const controller = new AbortController();
+    videoAbortController = controller;
+    let reservation;
+    $("#video-error").textContent = "";
+    $("#video-progress").value = 0;
+    $("#video-percent").textContent = "0%";
+    $("#video-result").pause();
+    $("#video-result").removeAttribute("src");
+    $("#video-result").load();
+    hide($("#video-result"));
+    setVideoBusy(true);
+    try {
+        await pywebview.api.set_video_export_active(true);
+        if (!videoReservation && !await chooseVideoOutput()) return;
+        reservation = videoReservation;
+        controller.signal.throwIfAborted();
+        const settings = structuredClone(collectExoSettings());
+        const segments = structuredClone(previewSegments);
+        $("#video-status").textContent = "音声・画像を準備中…";
+        const audio = await pywebview.api.get_video_audio($("#video-audio").value, collectTtsSettings());
+        if (!audio?.success) throw new Error(audio?.error || "音声を準備できません");
+        controller.signal.throwIfAborted();
+        const assets = await canvasAssets(settings);
+        controller.signal.throwIfAborted();
+        const result = await VideoTools.exportVideo({
+            bridge: pywebview.api, token: reservation.token, segments, settings, assets,
+            clips: audio.clips, signal: controller.signal,
+            onProgress: (value, message) => {
+                $("#video-progress").value = value;
+                $("#video-percent").textContent = `${Math.floor(value * 100)}%`;
+                $("#video-status").textContent = message;
+            },
+        });
+        $("#video-result").src = result.url;
+        show($("#video-result"));
+    } catch (error) {
+        $("#video-status").textContent = controller.signal.aborted ? "キャンセルしました" : "書き出しに失敗しました";
+        if (!controller.signal.aborted) $("#video-error").textContent = String(error.message || error);
+    } finally {
+        // Also covers failures during preparation, before exportVideo takes ownership.
+        if (reservation) {
+            const cleanup = await pywebview.api.abort_video_output(reservation.token);
+            if (!cleanup?.success) $("#video-error").textContent = cleanup?.error || "一時ファイルを削除できません";
+        }
+        await pywebview.api.set_video_export_active(false);
+        videoAbortController = null;
+        videoReservation = null;
+        $("#video-path").value = "";
+        setVideoBusy(false);
+    }
+}
+
+function setVideoBusy(busy) {
+    for (const id of ["btn-close-video", "btn-video-start", "btn-video-path", "video-audio", "video-width", "video-height", "video-fps"]) {
+        $(`#${id}`).disabled = busy;
+    }
+    $("#btn-video-cancel").disabled = !busy;
+}
+
+window._cancelVideoOnClose = () => {
+    videoAbortController?.abort();
+    $("#video-status").textContent = "書き出しを中止しています。中止後にもう一度閉じてください。";
+};
 
 // ============================================================
 // セグメント一覧（表 / タイムライン）

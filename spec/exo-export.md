@@ -1,6 +1,7 @@
 # EXO出力仕様
 
-GUIの成果物出力はAviUtl拡張編集用の `.exo` のみです。ファイルはCP932、改行はCRLFで保存します。
+GUIはAviUtl拡張編集用の `.exo` と [MP4](mp4-export.md) の出力に対応します。
+EXOファイルはCP932、改行はCRLFで保存します。
 
 ## タイムライン
 

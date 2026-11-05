@@ -115,6 +115,13 @@ def main():
 
         dirty状態の場合は終了をキャンセルし、JSに3択ダイアログを表示させる。
         """
+        if api._video_io.busy or api._video_export_active:
+            threading.Thread(
+                target=lambda: window.evaluate_js("window._cancelVideoOnClose && window._cancelVideoOnClose()"),
+                daemon=True,
+            ).start()
+            return False
+
         if api._skip_close_dialog:
             return  # 強制終了 → 許可
 
@@ -133,6 +140,7 @@ def main():
         return False
 
     window.events.closing += on_closing
+    window.events.closed += api._video_io.close
 
     webview.start(
         debug="--debug" in sys.argv,

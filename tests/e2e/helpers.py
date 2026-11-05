@@ -59,9 +59,21 @@ def reset_app_state(page: Page) -> None:
     """アプリの編集状態をリセットし、空の初期状態に戻す。
 
     各テスト前に page フィクスチャから呼び出され、前のテストの状態を
-    クリアする。render_preview_frame もスタブ化してブロッキングを防ぐ。
+    クリアする。APIモックと通知もテスト間で分離する。pywebviewのalertは
+    ブラウザdialogイベントではなくネイティブMessageBoxなので記録へ置き換える。
     """
     page.evaluate("""
+        Object.assign(pywebview.api, window.__testOriginalApi);
+        window.alert = window.__testAlert;
+        window.__testAlerts = [];
+        clearTimeout(saveTimer);
+        clearTimeout(ttsSaveTimer);
+        previewRequestId++;
+        canvasPreview?.dispose();
+        canvasPreview = null;
+        canvasPreviewKey = '';
+        document.getElementById('video-modal').classList.add('hidden');
+        document.getElementById('preview-error').textContent = '';
         document.getElementById('transcription-modal').classList.add('hidden');
         document.getElementById('text-input-modal').classList.add('hidden');
         document.getElementById('tts-modal').classList.add('hidden');
@@ -96,10 +108,6 @@ def reset_app_state(page: Page) -> None:
         document.getElementById('menu-save-project').disabled = true;
         document.getElementById('menu-save-project-as').disabled = true;
         hide(document.getElementById('speaker-mapping-section'));
-        pywebview.api.render_preview_frame = () => Promise.resolve({
-            success: true,
-            data_url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII='
-        });
     """)
 
 

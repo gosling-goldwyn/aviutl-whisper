@@ -123,6 +123,12 @@ def browser(app_process, _pw) -> Browser:
         "window.__aviutlWhisperReady === true",
         timeout=60_000,
     )
+    pg.evaluate("""() => {
+        window.__testOriginalApi = { ...pywebview.api };
+        window.__testAlerts = [];
+        window.__testAlert = message => window.__testAlerts.push(String(message));
+        window.alert = window.__testAlert;
+    }""")
     yield b
     # CDPセッションを切断（WebView2 プロセスは app_process が終了させる）
     b.close()

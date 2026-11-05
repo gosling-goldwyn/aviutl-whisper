@@ -11,6 +11,9 @@ block_cipher = None
 ROOT = Path(SPECPATH)
 SRC = ROOT / "src" / "aviutl_whisper"
 
+if not (SRC / "web" / "vendor" / "video-tools.js").is_file():
+    raise RuntimeError("MP4用JavaScriptがありません。npm ci; npm run build を実行してください")
+
 a = Analysis(
     [str(ROOT / "main.py")],
     pathex=[str(ROOT / "src")],
@@ -28,6 +31,7 @@ a = Analysis(
         "aviutl_whisper.transcriber",
         "aviutl_whisper.diarizer",
         "aviutl_whisper.exporter",
+        "aviutl_whisper.video_io",
         "faster_whisper",
         "ctranslate2",
         "speechbrain",

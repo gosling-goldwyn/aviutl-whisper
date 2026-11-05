@@ -38,6 +38,9 @@ DEFAULT_SETTINGS = {
         "split_on_speaker_change": False,
     },
     "exo": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30.0,
         "font": "MS UI Gothic",
         "font_size": 34,
         "spacing_x": 0,

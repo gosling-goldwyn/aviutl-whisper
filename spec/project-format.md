@@ -15,6 +15,10 @@
 | `exo_settings` | object | EXO出力およびプレビュー設定 |
 | `preview_index` | integer | 選択中セグメントの0始まりインデックス |
 
+CanvasプレビューとMP4も `exo_settings` の解像度 `width` / `height`、`fps` と字幕・画像設定を
+共用します。省略時は1920×1080、30fpsです。新しい必須フィールドはなく、version 1を維持します。
+MP4の保存先と音声ソースの選択は書き出し画面だけの状態です。
+
 各 `segments` 要素は `start`、`end`、`text`、`speaker` を持ちます。時刻は秒単位の数値です。
 
 ## 読み込みと互換性

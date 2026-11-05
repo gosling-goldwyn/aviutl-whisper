@@ -10,6 +10,8 @@ import threading
 from dataclasses import asdict
 from pathlib import Path
 
+from .video_io import VideoIO
+
 import webview
 
 from . import (
@@ -95,9 +97,9 @@ def _get_system_fonts() -> list[str]:
                     try:
                         name, _, _ = winreg.EnumValue(key, i)
                         # "MS Gothic (TrueType)" → "MS Gothic"
-                        font_name = name.split(" (")[0].strip()
-                        if font_name:
-                            fonts.add(font_name)
+                        for font_name in name.split(" (")[0].split("&"):
+                            if font_name.strip():
+                                fonts.add(font_name.strip())
                         i += 1
                     except OSError:
                         break
@@ -460,6 +462,108 @@ class Api:
         self._skip_close_dialog: bool = False
         self._tts_progress = {"progress": 0.0, "message": ""}
         self._tts_cancelled = False
+        self._video_io = VideoIO()
+        self._video_export_active = False
+
+    def set_video_export_active(self, active: bool):
+        self._video_export_active = bool(active)
+        return {"success": True}
+
+    def get_canvas_assets(self, paths: list[str]):
+        """Expose explicitly selected images through bounded HTTP range reads."""
+        try:
+            if not isinstance(paths, list) or len(paths) > 128:
+                raise ValueError("画像リストが不正です")
+            assets = {}
+            for path in paths:
+                if Path(path).suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}:
+                    raise ValueError(f"未対応の画像形式: {path}")
+                assets[path] = self._video_io.media_url(path)
+            return {"success": True, "assets": assets}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def get_video_audio_options(self):
+        return {
+            "success": True,
+            "source_available": self._audio_mode == "source" and Path(self._source_audio_path).is_file(),
+        }
+
+    def get_video_audio(self, source: str, tts_settings: dict | None = None):
+        """Describe existing audio; never invoke TTS generation or load whole PCM."""
+        try:
+            if source == "silence":
+                return {"success": True, "clips": []}
+            if source == "source":
+                if self._audio_mode != "source" or not self._source_audio_path:
+                    raise ValueError("元音声がありません。音声ソースを選択し直してください")
+                items = [{"audio_path": self._source_audio_path, "start": 0.0}]
+            elif source == "tts":
+                segments = self._tts_segments()
+                if not segments:
+                    raise ValueError("セグメントがありません")
+                available, skipped = elevenlabs_tts.get_combined_audio_items(segments, tts_settings or {})
+                if not available or skipped:
+                    missing = sum(len(item["segment_indices"]) for item in skipped)
+                    raise ValueError(f"生成済みTTS音声が不足しています（{missing}セグメント）。先にTTS画面で生成してください")
+                items = [
+                    {**item, "start": min(segments[i].start for i in item["segment_indices"])}
+                    for item in available
+                ]
+            else:
+                raise ValueError("音声ソースが不正です")
+            clips = []
+            for item in items:
+                path = item["audio_path"]
+                if Path(path).suffix.lower() == ".wma":
+                    raise ValueError("MP4出力ではWMAを直接読み込めません。元音声をWAVに変換して読み込み直してください")
+                clips.append({
+                    "url": self._video_io.media_url(path),
+                    "start": item["start"],
+                })
+            return {"success": True, "clips": clips}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def select_video_output(self):
+        try:
+            result = self.window.create_file_dialog(
+                webview.FileDialog.SAVE, file_types=("MP4動画 (*.mp4)",), save_filename="output.mp4",
+            )
+            if not result:
+                return {"success": False, "cancelled": True}
+            path = result if isinstance(result, str) else result[0]
+            return {"success": True, **self._video_io.reserve(path)}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def begin_video_output(self, token: str):
+        try:
+            self._video_io.begin(token)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def write_video_chunk(self, token: str, position: int, encoded: str):
+        try:
+            self._video_io.write(token, position, encoded)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def finish_video_output(self, token: str):
+        try:
+            path = self._video_io.finish(token)
+            return {"success": True, "path": path, "url": self._video_io.media_url(path)}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    def abort_video_output(self, token: str):
+        try:
+            self._video_io.abort(token)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     def set_window(self, window: webview.Window):
         # ネイティブWindowの公開属性をJS API生成時に再帰走査させない。
