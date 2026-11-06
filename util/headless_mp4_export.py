@@ -28,6 +28,7 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -235,18 +236,129 @@ def mix_audio(s, timing, voice_path, bgm_start, bgm_files, bgm_end, jingle_path,
          "-i", "-", out_wav], input=pcm.tobytes(), check=True)
 
 
+# ---------------------------------------------------------------- subtitles
+
+_TOKENIZER = None
+
+
+def tokenize_words(text):
+    """Split text into word surfaces (janome if available).
+
+    Concatenating the result reproduces the input. Word boundaries are
+    where subtitles may switch; a word is never split in the middle.
+    Without janome, falls back to script-run units (Latin/digit words,
+    single CJK characters with trailing punctuation attached).
+    """
+    global _TOKENIZER
+    try:
+        from janome.tokenizer import Tokenizer
+
+        if _TOKENIZER is None:
+            _TOKENIZER = Tokenizer()
+        return [tok.surface for tok in _TOKENIZER.tokenize(text)]
+    except Exception:
+        units = []
+        for m in re.finditer(r"[A-Za-z0-9]+(?:[._\-][A-Za-z0-9]+)*|\s+|[^\sA-Za-z0-9]", text):
+            u = m.group(0)
+            if units and re.fullmatch(r"[。、！？：；」』）)]", u):
+                units[-1] += u
+            else:
+                units.append(u)
+        return units
+
+
+_STRONG_END = ("。", "！", "？")
+_CLAUSE_END = ("、",)
+
+
+def word_wrap_lines(text, max_chars):
+    """Wrap text into lines at word boundaries (see tokenize_words).
+
+    A single word longer than max_chars is hard-wrapped; everything
+    else moves to the next line whole, so lines never break a word.
+    Explicit newlines are honored.
+    """
+    if max_chars <= 0:
+        return [text]
+    lines = []
+    for raw_line in str(text).replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        cur = ""
+        for w in tokenize_words(raw_line):
+            if cur and len(cur) + len(w) > max_chars and w.strip():
+                lines.append(cur)
+                cur = w.lstrip()
+            else:
+                cur += w
+            while len(cur) > max_chars:  # one word longer than a line
+                lines.append(cur[:max_chars])
+                cur = cur[max_chars:]
+        lines.append(cur)
+    return lines
+
+
+def split_subtitle_chunks(text, max_chars, soft_lines=3, hard_lines=4):
+    """Split one segment's text into subtitle chunks.
+
+    Each chunk wraps (word-aware) to at most hard_lines lines
+    (default 4); chunks prefer to end at sentence punctuation once
+    they reach soft_lines-1 lines, or at a clause comma once they
+    reach soft_lines lines (default 3). Splits happen only at word
+    boundaries, and the time split is proportional to chunk lengths.
+    """
+    text = str(text)
+    if max_chars <= 0 or len(word_wrap_lines(text, max_chars)) <= soft_lines:
+        return [text]
+    chunks, cur = [], ""
+    for w in tokenize_words(text):
+        if not cur:
+            cur = w
+            continue
+        is_punct_only = not w.strip() or re.fullmatch(r"[^\w\s]+", w or "") is not None
+        tail = cur.rstrip()
+        cur_lines = len(word_wrap_lines(cur, max_chars))
+        cand_lines = len(word_wrap_lines(cur + w, max_chars))
+        if not is_punct_only and cand_lines > hard_lines:
+            chunks.append(cur)
+            cur = w
+        elif not is_punct_only and cur_lines >= soft_lines - 1 and tail.endswith(_STRONG_END):
+            chunks.append(cur)
+            cur = w
+        elif not is_punct_only and cur_lines >= soft_lines and tail.endswith(_CLAUSE_END):
+            chunks.append(cur)
+            cur = w
+        else:
+            cur += w
+    if cur:
+        chunks.append(cur)
+    return [c.strip() for c in chunks if c.strip()] or [text]
+
+
+def expand_segments(segments, max_chars, soft_lines=3, hard_lines=4):
+    """Replace long segments by timed subtitle chunks (time split is
+    proportional to chunk character counts)."""
+    out = []
+    for seg in segments:
+        chunks = split_subtitle_chunks(seg["text"], max_chars, soft_lines, hard_lines)
+        if len(chunks) == 1:
+            out.append(seg)
+            continue
+        start, end = seg["start"], seg["end"]
+        total = sum(len(c) for c in chunks) or 1
+        t = start
+        for i, c in enumerate(chunks):
+            nxt = end if i == len(chunks) - 1 else t + (end - start) * (len(c) / total)
+            out.append({**seg, "start": t, "end": nxt, "text": c})
+            t = nxt
+    return out
+
+
 # ---------------------------------------------------------------- video
 
 def wrap_text(text, max_chars):
-    out = []
-    for line in str(text).replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        chars = list(line)
-        if not max_chars or not chars:
-            out.append(line)
-        else:
-            for i in range(0, len(chars), max_chars):
-                out.append("".join(chars[i:i + max_chars]))
-    return out
+    """Renderer line wrapping: word-aware (see word_wrap_lines)."""
+    if not max_chars:
+        return str(text).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return word_wrap_lines(text, max_chars)
 
 
 def hexcol(v):
@@ -422,6 +534,9 @@ def main():
     ap.add_argument("--seed", type=int, default=20261106, help="BGM shuffle seed (default: fixed)")
     ap.add_argument("--bitrate", default="8M", help="video bitrate (default: 8M, per spec for 1080p30)")
     ap.add_argument("--keep-work", action="store_true", help="keep intermediate files")
+    ap.add_argument("--work-dir", help="parent directory for intermediate files (default: system temp)")
+    ap.add_argument("--soft-lines", type=int, help="preferred max subtitle lines (default 3, or exo_settings)")
+    ap.add_argument("--hard-lines", type=int, help="absolute max subtitle lines (default 4, or exo_settings)")
     ap.add_argument("--no-encode", action="store_true", help="stop after audio mix + state rendering")
     args = ap.parse_args()
 
@@ -451,6 +566,14 @@ def main():
     bgm_files = [resolve(index, p) for p in s["bgm_files"]]
     jingle = resolve(index, s["closing_jingle"], required=False)
 
+    soft_lines = args.soft_lines or int(s.get("subtitle_soft_lines", 3))
+    hard_lines = args.hard_lines or int(s.get("subtitle_hard_lines", 4))
+    before = len(segments)
+    segments = expand_segments(segments, s["max_chars_per_line"], soft_lines, hard_lines)
+    if len(segments) != before:
+        print(f"subtitle split: {before} segments -> {len(segments)} chunks "
+              f"(soft {soft_lines} lines / hard {hard_lines} lines, word-boundary splits)")
+
     slots = {name: i for i, name in enumerate(sorted({g.get("speaker") or "Speaker 1" for g in segments}))}
 
     audio_dur = probe_duration(voice)
@@ -464,7 +587,9 @@ def main():
     if s["font"] and not font_path:
         print(f"warning: font '{s['font']}' not found; using fallback for all glyphs", file=sys.stderr)
 
-    work = tempfile.mkdtemp(prefix="awproj-mp4-")
+    if args.work_dir:
+        os.makedirs(args.work_dir, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="awproj-mp4-", dir=args.work_dir)
     try:
         mixed = os.path.join(work, "mixed.wav")
         mix_audio(s, timing, voice, bgm_start, bgm_files, bgm_end, jingle, mixed, seed=args.seed)
