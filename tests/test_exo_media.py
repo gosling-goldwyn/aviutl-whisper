@@ -189,7 +189,7 @@ def test_invalid_media_settings_are_rejected(field, value):
         ExoSettings.from_dict({field: value})
 
 
-def test_settings_json_roundtrip_keeps_every_media_field_and_old_files_get_defaults(tmp_path, monkeypatch):
+def test_project_media_roundtrip_and_application_settings_do_not_carry_media(tmp_path, monkeypatch):
     monkeypatch.setenv("AVIUTL_WHISPER_SETTINGS_PATH", str(tmp_path / "settings.json"))
     media = dict(
         audio_start_seconds=0, bgm_start_file="start.wav", bgm_end_file="end.wav",
@@ -197,20 +197,33 @@ def test_settings_json_roundtrip_keeps_every_media_field_and_old_files_get_defau
         closing_jingle="jingle.wav", closing_image="end.png", closing_seconds=12,
     )
     api = Api(MagicMock())
+    api._last_segments = [TranscriptionSegment(0, 1, "字幕")]
+    project = tmp_path / "media.awproj"
+    api.window.create_file_dialog.return_value = [str(project)]
+    assert api.save_project({"exo_settings": media})["success"]
+    loaded = api.load_project()
+    assert loaded["success"]
+    assert all(loaded["exo_settings"][k] == v for k, v in media.items())
     api.save_settings({"exo": media})
     exported = tmp_path / "aviutl-whisper-settings.json"
     api.window.create_file_dialog.return_value = [str(exported)]
     assert api.export_settings()["success"]
-    assert all(json.loads(exported.read_text("utf-8"))["settings"]["exo"][k] == v
-               for k, v in media.items())
+    preferences = json.loads(exported.read_text("utf-8"))["settings"]["exo"]
+    assert settings.PROJECT_MEDIA_FIELDS.isdisjoint(preferences)
+    assert preferences["audio_start_seconds"] == 0
     settings.save_settings({"exo": {"font": "Arial"}})
     assert settings.load_settings()["exo"]["audio_start_seconds"] == 1.5
-    assert settings.load_settings()["exo"]["closing_seconds"] == 15
+    assert settings.PROJECT_MEDIA_FIELDS.isdisjoint(settings.load_settings()["exo"])
+    # Old exported settings are accepted, but their production media is ignored.
+    exported.write_text(json.dumps({"exo": media}), encoding="utf-8")
     result = api.import_settings()
     assert result["success"]
     restored = asdict(ExoSettings.from_dict(result["settings"]["exo"]))
-    assert all(restored[key] == value for key, value in media.items())
-    assert restored["font"] == "MS UI Gothic"
+    assert all(restored[key] == getattr(ExoSettings(), key) for key in settings.PROJECT_MEDIA_FIELDS)
+    assert restored["font"] == "Arial"
+    # Reading preferences never mutates the loaded project's export settings.
+    assert api._exo_settings.closing_image == "end.png"
+    assert api._exo_settings.bgm_volume == 0
 
 
 def test_reloaded_project_exports_original_audio_after_temporary_wav_cleanup(tmp_path):

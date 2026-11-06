@@ -1,0 +1,16 @@
+{
+  "name": "aviutl-whisper-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-web.mjs",
+    "test": "node --test tests/js/*.test.mjs"
+  },
+  "dependencies": {
+    "mediabunny": "1.65.1"
+  },
+  "devDependencies": {
+    "@fontsource/noto-sans-jp": "5.3.1",
+    "esbuild": "0.28.2"
+  }
+}

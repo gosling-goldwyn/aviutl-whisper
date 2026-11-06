@@ -1,6 +1,7 @@
 """設定の永続化モジュール - settings.json の読み書き"""
 
 import base64
+import copy
 import json
 import logging
 import os
@@ -8,6 +9,22 @@ import platform
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# These values describe the current production, rather than application defaults.
+# They remain in .awproj/exo_settings (including Undo), never in settings JSON.
+PROJECT_MEDIA_FIELDS = frozenset({
+    "bgm_start_file", "bgm_end_file", "bgm_files", "bgm_volume", "outro_seconds",
+    "closing_jingle", "closing_image", "closing_seconds",
+})
+
+
+def application_settings(data: dict) -> dict:
+    result = copy.deepcopy(data)
+    if isinstance(result.get("exo"), dict):
+        for key in PROJECT_MEDIA_FIELDS:
+            result["exo"].pop(key, None)
+    return result
+
 
 DEFAULT_SETTINGS = {
     "model_size": "medium",
@@ -38,6 +55,9 @@ DEFAULT_SETTINGS = {
         "split_on_speaker_change": False,
     },
     "exo": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 30.0,
         "font": "MS UI Gothic",
         "font_size": 34,
         "spacing_x": 0,
@@ -89,10 +109,10 @@ def load_settings() -> dict:
             data = json.loads(path.read_text(encoding="utf-8"))
             # デフォルト値でマージ（新しいキーの追加に対応）
             merged = _deep_merge(DEFAULT_SETTINGS, data)
-            return merged
+            return application_settings(merged)
     except Exception:
         logger.warning("設定ファイルの読み込みに失敗: %s", path, exc_info=True)
-    return dict(DEFAULT_SETTINGS)
+    return application_settings(DEFAULT_SETTINGS)
 
 
 def save_settings(settings: dict) -> None:
@@ -101,7 +121,7 @@ def save_settings(settings: dict) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
-            json.dumps(settings, ensure_ascii=False, indent=2),
+            json.dumps(application_settings(settings), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     except Exception:
